@@ -17,8 +17,9 @@ LOCAL downloadsDir IS "1:/downloads/".
 
 LOCAL currentSystemVersion IS "probeOS_001.ks".
 LOCAL updateFile IS VOLUME(1):NAME + "_missionUpdate.ks".
-LOCAL configFile IS VOLUME(1):NAME + "_config.ks".
+LOCAL configFile IS VOLUME(1):NAME + "_config.json".
 LOCAL toDownload IS LIST().
+LOCAL VES IS LEXICON().
 
 IF NOT EXISTS(configUpdateDir) { CREATEDIR(configUpdateDir). }
 IF NOT EXISTS(missionUpdateDir) { CREATEDIR(missionUpdateDir). }
@@ -27,6 +28,8 @@ IF NOT EXISTS(bootDir) { CREATEDIR(bootDir). }
 IF NOT EXISTS(configDir) { CREATEDIR(configDir). }
 IF NOT EXISTS(missionDir) { CREATEDIR(missionDir). }
 IF NOT EXISTS(downloadsDir) { CREATEDIR(downloadsDir). }
+
+IF EXISTS(configDir + configFile) { SET VES TO READJSON(). }
 
 //	Get signal delay to KSC
 FUNCTION Delay {
