@@ -17,9 +17,13 @@ LOCAL downloadsDir IS "1:/downloads/".
 
 LOCAL currentSystemVersion IS "probeOS_001.ks".
 LOCAL updateFile IS VOLUME(1):NAME + "_missionUpdate.ks".
-LOCAL configFile IS VOLUME(1):NAME + "_config.json".
+LOCAL configFile IS VOLUME(1):NAME + "_config.ks".
 LOCAL toDownload IS LIST().
-LOCAL VES IS LEXICON().
+
+LOCAL configured IS FALSE.
+LOCAL steeringLocked IS FALSE.
+LOCAL steer IS V(0,0,0).
+LOCAL vehicle IS LEXICON().
 
 IF NOT EXISTS(configUpdateDir) { CREATEDIR(configUpdateDir). }
 IF NOT EXISTS(missionUpdateDir) { CREATEDIR(missionUpdateDir). }
@@ -29,10 +33,8 @@ IF NOT EXISTS(configDir) { CREATEDIR(configDir). }
 IF NOT EXISTS(missionDir) { CREATEDIR(missionDir). }
 IF NOT EXISTS(downloadsDir) { CREATEDIR(downloadsDir). }
 
-IF EXISTS(configDir + configFile) { SET VES TO READJSON(). }
-
-//	Get signal delay to KSC
 FUNCTION Delay {
+	//	Get signal delay to KSC
 	RETURN ADDONS:RT:DELAY(SHIP)*2.
 }
 
@@ -138,8 +140,33 @@ FUNCTION GetUpdates {
 	}
 }
 
+FUNCTION StandBy {
+	//	if configuration file is loaded then standby function will
+	//	do some basic things like, for example, point towards the
+	//	sun to keep batteries charged, etc.
+	IF configured {
+
+		IF vehicle:HASKEY("standby-facing") {
+			IF vehicle["standby-facing"]:HASKEY("vector") {
+				SET steer TO LOOKDIRUP(vehicle["standby-facing"]["vector"], SHIP:FACING:TOPVECTOR).
+				LOCK STEERING TO steer.
+			}
+		}
+
+		IF vehicle:HASKEY("on-boot") {
+
+		}
+
+		IF vehicle:HASKEY("on-lv-separation") {
+
+		}
+
+	}
+}
+
 IF EXISTS(configDir + configFile) {
 	RUNPATH(configDir + configFile).
+	SET configured TO TRUE.
 	PRINT "Configuration:     Loaded" AT(3,3).
 } ELSE { PRINT "Configuration:     Not Loaded" AT(3,3). }
 
