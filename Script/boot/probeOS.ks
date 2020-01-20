@@ -14,6 +14,7 @@ LOCAL bootDir IS "1:/boot/".
 LOCAL configDir IS "1:/config/".
 LOCAL missionDir IS "1:/mission/".
 LOCAL downloadsDir IS "1:/downloads/".
+LOCAL tempDir IS "1:/temp/".	// This is where all libraries and temporary files should be saved. It will be cleared after each mission script is executed.
 
 LOCAL currentSystemVersion IS "probeOS_001.ks".
 LOCAL updateFile IS VOLUME(1):NAME + "_missionUpdate.ks".
@@ -32,6 +33,43 @@ IF NOT EXISTS(bootDir) { CREATEDIR(bootDir). }
 IF NOT EXISTS(configDir) { CREATEDIR(configDir). }
 IF NOT EXISTS(missionDir) { CREATEDIR(missionDir). }
 IF NOT EXISTS(downloadsDir) { CREATEDIR(downloadsDir). }
+IF NOT EXISTS(tempDir) { CREATEDIR(tempDir). }
+
+// Delete all temporary files from disk.
+FUNCTION ClearTempFiles {
+	FOR f IN OPEN(tempDir) {
+		DELETEPATH(tempDir+f:NAME).
+	}
+}
+
+// All files except the boot file.
+FUNCTION SoftReset {
+	SWITCH TO 1.
+	LIST FILES IN allFiles.
+	FOR f IN allFiles {
+		IF NOT f:ISFILE {
+			IF f:NAME <> "boot" { DELETEPATH("1:/"+f:NAME). }
+		} ELSE { DELETEPATH("1:/"+f:NAME). }
+	}
+	FOR f IN OPEN(bootDir) {
+		IF f:NAME <> currentSystemVersion AND f:NAME <> "probeOS.ks" {
+			DELETEPATH(bootDir+f:NAME).
+		}
+	}
+	RESTART().
+}
+
+// Wipes everything from the disk including ProbeOS system
+// Should only be used to bring the CPU to a clean state
+FUNCTION HardReset {
+	SWITCH TO 1.
+	LIST FILES IN allFiles.
+	FOR f IN allFiles {
+		DELETEPATH("1:/"+f:NAME).
+	}
+	SET CORE:BOOTFILENAME TO "None".
+	RESTART().
+}
 
 FUNCTION Delay {
 	//	Get signal delay to KSC
@@ -65,6 +103,7 @@ FUNCTION SystemUpdate {
 	Notify("Downloading system update.").
 	IF DownloadFile(systemUpdateDir, fileName) {
 		DELETEPATH(bootDir + "probeOS.ks").
+		DELETEPATH(bootDir + currentSystemVersion).
 		MOVEPATH(downloadsDir + fileName, bootDir + "probeOS.ks").
 		Notify("Update complete! Rebooting...", 5, GREEN).
 		WAIT 2.
@@ -92,7 +131,8 @@ FUNCTION MissionUpdate {
 		DELETEPATH(downloadsDir + updateFile).
 		Notify("Download complete! Running instructions...", 5, GREEN).
 		WAIT 2.
-		RUNPATH(missionDir + updateFile).
+		RUNPATH(missionDir + updateFile).	// Run the mission file
+		ClearTempFiles().					// Clear all temporary files
 		REBOOT.
 	}
 }
@@ -100,7 +140,7 @@ FUNCTION MissionUpdate {
 FUNCTION GetUpdates {
 	//	Check if new version of boot file exists
 	IF toDownload:EMPTY {
-		FOR f IN VOLUME(0):OPEN("boot/") {
+		FOR f IN OPEN(systemUpdateDir) {
 			IF f:NAME:STARTSWITH("probeOS_") AND f:NAME <> currentSystemVersion {
 				IF f:NAME:SUBSTRING(8, f:NAME:LENGTH()-11):TONUMBER() > version {
 					toDownload:ADD(LEXICON("type", "boot", "name", f:NAME, "time" TIME:SECONDS + Delay())).
