@@ -38,11 +38,3 @@ FUNCTION TimeToAltitude {
   }
   RETURN (-VERTICALSPEED - SQRT( (VERTICALSPEED*VERTICALSPEED)-(2 * (-Gravity(currentAltitude)) * (currentAltitude - desiredAltitude))) ) /  ((-Gravity(currentAltitude))).
 }
-
-// Velocity at a circular orbit at the given altitude
-FUNCTION OrbitalVelocityAt{
-  PARAMETER altitude.
-  PARAMETER body IS SHIP:OBT:BODY.
-
-  RETURN SQRT(body:MU/(body:RADIUS+altitude)).
-}
