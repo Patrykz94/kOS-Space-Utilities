@@ -3,7 +3,10 @@ SET SHIP:CONTROL:PILOTMAINTHROTTLE TO 0.
 
 SET CONFIG:IPU TO 2000.
 
-RUNPATH("0:/libs.ks").
+// Run the required library files
+RUNPATH("0:/lib/telemetry.ks").
+RUNPATH("0:/lib/maneuvers.ks").
+RUNPATH("0:/lib/misc.ks").
 
 //	If necessary, print an error message and crash the program by trying to use undefined variables.
 FUNCTION ForceCrash {

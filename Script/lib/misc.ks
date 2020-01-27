@@ -1,4 +1,4 @@
-//  Rodrigues vector rotation formula - Borrowed from PEGAS
+// Rodrigues vector rotation formula - Borrowed from PEGAS
 FUNCTION Rodrigues {
   PARAMETER inVector. //  Expects a vector
   PARAMETER axis.   //  Expects a vector
@@ -13,7 +13,7 @@ FUNCTION Rodrigues {
   RETURN outVector.
 }
 
-//  Function that returns a normal vector
+// Function that returns a normal vector
 FUNCTION GetNormalVec {
   PARAMETER prog IS SHIP:VELOCITY:SURFACE, pos IS SHIP:POSITION - BODY:POSITION.
   RETURN VCRS(prog,pos).
@@ -31,51 +31,8 @@ FUNCTION NodeFromVector {
   RETURN NODE(n_time, VDOT(vec,s_rad:NORMALIZED), VDOT(vec,s_nrm:NORMALIZED), VDOT(vec,s_pro:NORMALIZED)).
 }
 
-FUNCTION Gravity {
-  PARAMETER a IS SHIP:ALTITUDE.
-  PARAMETER b IS SHIP:OBT:BODY.
-  RETURN b:MU / (b:RADIUS + a)^2.
-}
-
-FUNCTION ShipCurrentTWR {
-  RETURN ShipActiveThrust() / SHIP:MASS / Gravity(SHIP:ALTITUDE).
-}
-
-FUNCTION ShipTWR {
-  RETURN SHIP:MAXTHRUST / SHIP:MASS / Gravity(SHIP:ALTITUDE).
-}
-
-FUNCTION ShipActiveThrust {
-  LOCAL activeThrust IS 0.
-  LOCAL allEngines IS 0.
-  LIST ENGINES IN allEngines.
-  FOR engine IN allEngines {
-    IF engine:IGNITION {
-      SET activeThrust TO activeThrust + engine:THRUST.
-    }
-  }
-  RETURN activeThrust.
-}
-
-FUNCTION TimeToAltitude {
-  PARAMETER desiredAltitude.
-  PARAMETER currentAltitude.
-  
-  IF currentAltitude-desiredAltitude <= 0 {
-    RETURN 0.
-  }
-  RETURN (-VERTICALSPEED - SQRT( (VERTICALSPEED*VERTICALSPEED)-(2 * (-Gravity(currentAltitude)) * (currentAltitude - desiredAltitude))) ) /  ((-Gravity(currentAltitude))).
-}
-
-FUNCTION OrbitalVelocityAt{
-  PARAMETER altitude.
-  PARAMETER body IS SHIP:OBT:BODY.
-
-  RETURN SQRT(body:MU/(body:RADIUS+altitude)).
-}
-
+// Display a gui and get mission details from user - TODO: make this more robust and lest hard coded
 FUNCTION GetMissionProfile {
-
   // Create a gui window
   LOCAL gui IS GUI(400).
   // Add widgets to the GUI
@@ -144,6 +101,7 @@ FUNCTION GetMissionProfile {
   RETURN TRUE.
 }
 
+// Create the terminal flight UI
 FUNCTION CreateUI {
   CLEARSCREEN.
   SET TERMINAL:WIDTH TO 53.
@@ -224,6 +182,7 @@ FUNCTION PrintValue {
   PRINT str AT(start, line).
 }
 
+// Refresh the values in the terminal flight UI
 FUNCTION RefreshUI {
   IF runmode = 0 { PrintValue("Pre-launch " + subrunmode, 3, 8, 26, "R"). }
   ELSE IF runmode = 1 { IF mT - lT > 0 { PrintValue("Launch " + subrunmode, 3, 8, 26, "R"). } }
@@ -258,79 +217,11 @@ FUNCTION RefreshUI {
   }
 }
 
+// Add a new message to be displayed on terminal flight UI
 FUNCTION AddUIMessage {
   PARAMETER message IS FALSE.
   IF message:ISTYPE("String") {
     UILex["time"]:ADD(TIME:SECONDS).
     UILex["message"]:ADD(message).
   }
-}
-
-// Time to complete a maneuver
-FUNCTION mnv_time {
-  PARAMETER dv.
-  SET ens TO LIST().
-  ens:CLEAR.
-  SET ens_thrust TO 0.
-  SET ens_isp TO 0.
-  LIST ENGINES IN myengines.
-
-  FOR en IN myengines {
-    IF en:IGNITION = TRUE AND en:FLAMEOUT = FALSE {
-      ens:ADD(en).
-    }
-  }
-
-  FOR en IN ens {
-    SET ens_thrust TO ens_thrust + en:AVAILABLETHRUST.
-    SET ens_isp TO ens_isp + en:ISP.
-  }
-
-  IF ens_thrust = 0 OR ens_isp = 0 {
-    RETURN 0.
-  }
-  ELSE {
-    LOCAL f IS ens_thrust * 1000.  // engine thrust (kg * m/s²)
-    LOCAL m IS SHIP:MASS * 1000.        // starting mass (kg)
-    LOCAL e IS CONSTANT():e.            // base of natural log
-    LOCAL p IS ens_isp/ens:LENGTH.               // engine isp (s) support to average different isp values
-    LOCAL g IS SHIP:ORBIT:BODY:MU/SHIP:OBT:BODY:RADIUS^2.    // gravitational acceleration constant (m/s²)
-    RETURN g * m * p * (1 - e^(-dv/(g*p))) / f.
-  }
-}
-
-// Delta v requirements for Hohmann Transfer
-FUNCTION mnv_hohmann_dv {
-  PARAMETER desiredAltitude.
-
-  SET u  TO SHIP:OBT:BODY:MU.
-  SET r1 TO SHIP:OBT:SEMIMAJORAXIS.
-  SET r2 TO desiredAltitude + SHIP:OBT:BODY:RADIUS.
-
-  // v1
-  SET v1 TO SQRT(u / r1) * (SQRT((2 * r2) / (r1 + r2)) - 1).
-
-  // v2
-  SET v2 TO SQRT(u / r2) * (1 - SQRT((2 * r1) / (r1 + r2))).
-
-  RETURN LIST(v1, v2).
-}
-
-// Execute the next node
-FUNCTION mnv_exec_node {
-  PARAMETER autoWarp.
-
-  LOCAL n IS NEXTNODE.
-  LOCAL v IS n:BURNVECTOR.
-
-  LOCAL startTime IS TIME:SECONDS + n:ETA - mnv_time(v:MAG)/2.
-  LOCK STEERING TO n:BURNVECTOR.
-
-  IF autoWarp { WAIT 1. WARPTO(startTime - 30). }
-
-  WAIT UNTIL TIME:SECONDS >= startTime.
-  LOCK THROTTLE TO MAX(MIN(mnv_time(n:BURNVECTOR:MAG), 1),0.05).
-  WAIT UNTIL VDOT(n:BURNVECTOR, v) < 0.
-  LOCK THROTTLE TO 0.
-  UNLOCK STEERING.
 }
