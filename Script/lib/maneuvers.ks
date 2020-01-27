@@ -1,5 +1,5 @@
 // Time to complete a maneuver
-FUNCTION mnv_time {
+FUNCTION BurnTime {
   PARAMETER dv.
   SET ens TO LIST().
   ens:CLEAR.
@@ -32,7 +32,7 @@ FUNCTION mnv_time {
 }
 
 // Delta v requirements for Hohmann Transfer
-FUNCTION mnv_hohmann_dv {
+FUNCTION HohmanDv {
   PARAMETER desiredAltitude.
 
   SET u  TO SHIP:OBT:BODY:MU.
@@ -49,19 +49,19 @@ FUNCTION mnv_hohmann_dv {
 }
 
 // Execute the next node
-FUNCTION mnv_exec_node {
+FUNCTION ExecNode {
   PARAMETER autoWarp.
 
   LOCAL n IS NEXTNODE.
   LOCAL v IS n:BURNVECTOR.
 
-  LOCAL startTime IS TIME:SECONDS + n:ETA - mnv_time(v:MAG)/2.
+  LOCAL startTime IS TIME:SECONDS + n:ETA - BurnTime(v:MAG)/2.
   LOCK STEERING TO n:BURNVECTOR.
 
   IF autoWarp { WAIT 1. WARPTO(startTime - 30). }
 
   WAIT UNTIL TIME:SECONDS >= startTime.
-  LOCK THROTTLE TO MAX(MIN(mnv_time(n:BURNVECTOR:MAG), 1),0.05).
+  LOCK THROTTLE TO MAX(MIN(BurnTime(n:BURNVECTOR:MAG), 1),0.05).
   WAIT UNTIL VDOT(n:BURNVECTOR, v) < 0.
   LOCK THROTTLE TO 0.
   UNLOCK STEERING.

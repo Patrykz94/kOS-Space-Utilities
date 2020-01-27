@@ -205,7 +205,7 @@ FUNCTION Circularization {
 		AddUIMessage("Maneuver node created. Executing.").
 		SET subRunmode TO 1.
 	} ELSE IF subRunmode = 1 {	// Use maneuver node to circularize at the perfect altitude
-		mnv_exec_node(TRUE).
+		ExecNode(TRUE).
 		LOCK STEERING TO steer.
 		LOCK THROTTLE TO tval.
 		SET steer TO SHIP:VELOCITY:ORBIT.
