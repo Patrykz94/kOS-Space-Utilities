@@ -23,8 +23,7 @@ LOCAL configFile IS VOLUME(1):NAME + "_config.ks".
 LOCAL toDownload IS LIST().
 
 LOCAL configured IS FALSE.
-LOCAL steeringLocked IS FALSE.
-LOCAL steer IS V(0,0,0).
+GLOBAL steeringLocked IS FALSE.
 GLOBAL vehicle IS LEXICON().
 
 IF NOT EXISTS(configUpdateDir) { CREATEDIR(configUpdateDir). }
@@ -75,11 +74,6 @@ FUNCTION HardReset {
 	REBOOT.
 }
 
-FUNCTION Delay {
-	//	Get signal delay to KSC
-	RETURN ADDONS:RT:DELAY(SHIP)*2.
-}
-
 FUNCTION Notify {
   PARAMETER message, msgDelay is 5, color IS YELLOW.
   HUDTEXT("kOS: " + message, msgDelay, 2, 20, color, false).
@@ -88,7 +82,7 @@ FUNCTION Notify {
 FUNCTION DownloadFile {
 	PARAMETER fileDir, fileName, isTemp IS FALSE.
 	WAIT 2.
-	IF NOT ADDONS:RT:HASCONNECTION(SHIP) {
+	IF NOT HOMECONNECTION:ISCONNECTED {
 		Notify("ERROR: Donwloading update failed. Connection lost.", 5, RED).
 		RETURN FALSE.
 	} ELSE IF NOT EXISTS(fileDir + fileName) {
@@ -150,7 +144,7 @@ FUNCTION GetUpdates {
 		FOR f IN OPEN(systemUpdateDir) {
 			IF f:NAME:STARTSWITH("probeOS_") AND f:NAME <> currentSystemVersion {
 				IF f:NAME:SUBSTRING(8, f:NAME:LENGTH()-11):TONUMBER() > version {
-					toDownload:ADD(LEXICON("type", "boot", "name", f:NAME, "time", TIME:SECONDS + Delay())).
+					toDownload:ADD(LEXICON("type", "boot", "name", f:NAME, "time", TIME:SECONDS)).
 					WHEN toDownload[0]["time"] < TIME:SECONDS THEN {
 						KUNIVERSE:TIMEWARP:CANCELWARP().
 						WHEN KUNIVERSE:TIMEWARP:ISSETTLED THEN {
@@ -166,7 +160,7 @@ FUNCTION GetUpdates {
 	IF toDownload:EMPTY {
 		//	If no boot file update needed, check for config updates
 		IF EXISTS(configUpdateDir + configFile) {
-			toDownload:ADD(LEXICON("type", "config", "name", configFile, "time", TIME:SECONDS + Delay())).
+			toDownload:ADD(LEXICON("type", "config", "name", configFile, "time", TIME:SECONDS)).
 			WHEN toDownload[0]["time"] < TIME:SECONDS THEN {
 				KUNIVERSE:TIMEWARP:CANCELWARP().
 				WHEN KUNIVERSE:TIMEWARP:ISSETTLED THEN {
@@ -175,7 +169,7 @@ FUNCTION GetUpdates {
 				}
 			}
 		} ELSE IF EXISTS(missionUpdateDir + updateFile) {	//	If no boot/config file update needed, check for mission updates
-			toDownload:ADD(LEXICON("type", "mission", "name", updateFile, "time", TIME:SECONDS + Delay())).
+			toDownload:ADD(LEXICON("type", "mission", "name", updateFile, "time", TIME:SECONDS)).
 			WHEN toDownload[0]["time"] < TIME:SECONDS THEN {
 				KUNIVERSE:TIMEWARP:CANCELWARP().
 				WHEN KUNIVERSE:TIMEWARP:ISSETTLED THEN {
@@ -188,17 +182,9 @@ FUNCTION GetUpdates {
 }
 
 FUNCTION StandBy {
-	IF configured {
-		IF vehicle:HASKEY("on-low-power") {
-			FOR res IN SHIP:RESOURCES {
-				IF res:NAME = "ElectricCharge" {
-					IF res:AMOUNT/res:CAPACITY < 0.2 {
-						vehicle["on-low-power"]["disable-systems"]().
-					} ELSE IF res:AMOUNT/res:CAPACITY > 0.8 {
-						vehicle["on-low-power"]["enable-systems"]().
-					}
-				}
-			}
+	IF vehicle:HASKEY("standby-facing") {
+		IF (VANG(SHIP:FACING:VECTOR, vehicle["standby-facing"]["facing-vector"]) > 1) OR (SHIP:ANGULARVEL:MAG > 0.01) {
+			vehicle["standby-facing"]["face"]().
 		}
 	}
 }
@@ -212,14 +198,12 @@ IF EXISTS(configDir + configFile) {
 Notify("System loaded successfully! Running ProbeOS v" + version + ".").
 
 UNTIL FALSE {
-	IF ADDONS:RT:HASCONNECTION(SHIP) {
+	IF HOMECONNECTION:ISCONNECTED {
 		PRINT "Connection Status: Connected!    " AT(3,4).
-		PRINT "Signal Delay:      " + ROUND(Delay(),2) + "s       " AT(3,5).
 		GetUpdates().
 	} ELSE {
 		PRINT "Connection Status: Not Connected!" AT(3,4).
-		PRINT "Signal Delay:      N/A       " AT(3,5).
-		WAIT UNTIL ADDONS:RT:HASCONNECTION(SHIP).
+		WAIT UNTIL HOMECONNECTION:ISCONNECTED.
 	}
 	IF KUNIVERSE:TIMEWARP:MODE = "RAILS" AND KUNIVERSE:TIMEWARP:RATE > 1 {
 		WAIT KUNIVERSE:TIMEWARP:RATE.
