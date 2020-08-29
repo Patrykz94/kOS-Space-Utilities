@@ -25,6 +25,7 @@ LOCAL toDownload IS LIST().
 LOCAL configured IS FALSE.
 GLOBAL steeringLocked IS FALSE.
 GLOBAL vehicle IS LEXICON().
+GLOBAL missionInProgress IS EXISTS(tempDir + "missionInProgress.ks").
 
 IF NOT EXISTS(configUpdateDir) { CREATEDIR(configUpdateDir). }
 IF NOT EXISTS(missionUpdateDir) { CREATEDIR(missionUpdateDir). }
@@ -132,10 +133,15 @@ FUNCTION MissionUpdate {
 		DELETEPATH(downloadsDir + updateFile).
 		Notify("Download complete! Running instructions...", 5, GREEN).
 		WAIT 4.
-		RUNPATH(missionDir + updateFile).	// Run the mission file
-		ClearTempFiles().					// Clear all temporary files
-		REBOOT.
+		RunMission().
 	}
+}
+
+FUNCTION RunMission {
+	PARAMETER dir IS missionDir, file IS updateFile.
+	RUNPATH(dir + file).	// Run the mission file
+	ClearTempFiles().		// Clear all temporary files
+	REBOOT.
 }
 
 FUNCTION GetUpdates {
@@ -187,6 +193,11 @@ FUNCTION StandBy {
 			vehicle["standby-facing"]["face"]().
 		}
 	}
+}
+
+// Check for an on-going mission and let it complete.
+IF missionInProgress {
+	RunMission().
 }
 
 IF EXISTS(configDir + configFile) {
