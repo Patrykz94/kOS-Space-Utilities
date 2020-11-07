@@ -39,15 +39,79 @@ FUNCTION TimeToAltitude {
 	RETURN (-VERTICALSPEED - SQRT( (VERTICALSPEED*VERTICALSPEED)-(2 * (-Gravity(currentAltitude)) * (currentAltitude - desiredAltitude))) ) /  ((-Gravity(currentAltitude))).
 }
 
+// Calculates the vessels distance from the body (Radius) at the point specified by true anomaly
+FUNCTION OrbitalRadius {
+	PARAMETER trueAnomaly IS OBT:TRUEANOMALY, semiMajaorAxis IS OBT:SEMIMAJORAXIS, ecc IS OBT:ECCENTRICITY.
+
+	RETURN (semiMajaorAxis*(1-ecc^2))/(1+ecc*COS(trueAnomaly)).
+}
+
+// Calculates the vessels flight path angle at the specified true anomaly
+FUNCTION OrbitalFlightPathAngle {
+	PARAMETER trueAnomaly IS OBT:TRUEANOMALY, ecc IS OBT:ECCENTRICITY.
+
+	RETURN ARCTAN((ecc*SIN(trueAnomaly))/(1+ecc*COS(trueAnomaly))).
+}
+
+// Calculates the speed of the vessel at the point specified by true anomaly
+FUNCTION OrbitalSpeed {
+	PARAMETER radius IS (BODY:RADIUS + OBT:ALTITUDE), semiMajaorAxis IS OBT:SEMIMAJORAXIS, orbitingBody IS OBT:BODY.
+
+	RETURN SQRT(orbitingBody:MU*((2/radius)-(1/semiMajaorAxis))).
+}
+
+// Caclucate eccentricity from the Apoapsis, Periapsis and Body Radius
+FUNCTION OrbitalEccentricity {
+	PARAMETER ap IS SHIP:APOAPSIS, pe IS SHIP:PERIAPSIS, bodyRadius IS OBT:BODY:RADIUS.
+
+	RETURN ((ap + bodyRadius) - (pe + bodyRadius)) / ((ap+bodyRadius) + (pe+bodyRadius)).
+}
+
+// Calculating Mean Anomaly from True Anomaly and Eccentricity
+FUNCTION TrueToMean {
+	PARAMETER trueAnomaly IS OBT:TRUEANOMALY, ecc IS OBT:ECCENTRICITY.
+
+	// Calculate the Eccentric Anomaly first
+	LOCAL EccAnomaly IS ARCCOS((ecc + COS(trueAnomaly))/(1+ecc*COS(trueAnomaly))).
+	// Use Eccentric Anomaly to calculate the Mean Anomaly
+	LOCAL MeanAnomaly IS CONSTANT:RadToDeg * (CONSTANT:DegToRad*EccAnomaly-ecc*SIN(EccAnomaly)).
+
+	IF trueAnomaly > 180 {
+		// Using above calculations, the mean anomaly only goes up to 180 and then starts going down again.
+		// This makes sure that the returned value will still be going up past 180
+		RETURN 360 - MeanAnomaly.
+	} ELSE {
+		RETURN MeanAnomaly.
+	}
+}
+
 // Time to the closest equatorial node
 FUNCTION TimeToEquatorialNode {
-	LOCAL Mx IS 0.
-	LOCAL M1 IS CONSTANT:PI/2 - OBT:ECCENTRICITY.
-	LOCAL M2 IS 3*CONSTANT:PI/2 - OBT:ECCENTRICITY.
+	LOCAL ClosestNode IS 0.
+	// Mean Anomaly of Ascending Node
+	LOCAL AN IS TrueToMean(MOD(360 - OBT:ARGUMENTOFPERIAPSIS, 360)).
+	// Mean Anomaly of Descending node
+	LOCAL DN IS TrueToMean(MOD(540 - OBT:ARGUMENTOFPERIAPSIS, 360)).
+	// Current Mean anomaly of the ship
+	LOCAL ShipMeanAnomaly IS TrueToMean().
 
-	IF OBT:TRUEANOMALY > 90 AND OBT:TRUEANOMALY <= 270 { SET Mx TO M2. }
-	ELSE { SET Mx TO M1. }
+	// Decide which node is the closest based on ships current position
+	IF AN > DN AND ShipMeanAnomaly > AN { SET ClosestNode TO DN + 360. }
+	ELSE IF AN > DN AND ShipMeanAnomaly > DN { SET ClosestNode TO AN. }
+	ELSE IF DN > AN AND ShipMeanAnomaly > DN { SET ClosestNode TO AN + 360. }
+	ELSE IF DN > AN AND ShipMeanAnomaly <= AN { SET ClosestNode TO AN. }
+	ELSE { SET ClosestNode TO DN. }
 
+	// Calculate Mean Motion
 	LOCAL n IS 2*CONSTANT:PI/OBT:PERIOD.
-	RETURN (Mx - OBT:MEANANOMALYATEPOCH)/n.
+	
+	// Return the time to closest equatorial node
+	RETURN (CONSTANT:DegToRad*(ClosestNode - ShipMeanAnomaly))/n.
+}
+
+// Calculate the altitude of a stationary orbit
+FUNCTION StationaryOrbitAltitude {
+	PARAMETER orbitBody IS OBT:BODY.
+
+	RETURN ((orbitBody:MU * orbitBody:ROTATIONPERIOD^2)/(4*CONSTANT:PI^2))^(1.0/3.0)-orbitBody:RADIUS.
 }
