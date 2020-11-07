@@ -1,4 +1,5 @@
 @LAZYGLOBAL OFF.
+WAIT UNTIL SHIP:UNPACKED.
 CLEARSCREEN.
 SET SHIP:CONTROL:PILOTMAINTHROTTLE TO 0.
 SET VOLUME(1):NAME TO SHIP:NAME + "_" + CORE:TAG.
@@ -87,7 +88,7 @@ FUNCTION DownloadFile {
 		Notify("ERROR: Donwloading update failed. Connection lost.", 5, RED).
 		RETURN FALSE.
 	} ELSE IF NOT EXISTS(fileDir + fileName) {
-		Notify("ERROR: Donwloading update failed. File not found.", 5, RED).
+		Notify("ERROR: Donwloading update failed. File " + fileName + " not found.", 5, RED).
 		RETURN FALSE.
 	} ELSE {
 		IF EXISTS(downloadsDir + fileName) { DELETEPATH(downloadsDir + fileName). }
@@ -96,6 +97,11 @@ FUNCTION DownloadFile {
 		IF isTemp { MOVEPATH(downloadsDir + fileName, tempDir + fileName). }
 		RETURN TRUE.
 	}
+}
+
+FUNCTION DownloadLib {
+	PARAMETER fileName.
+	RETURN DownloadFile(libsDir, fileName, TRUE).
 }
 
 FUNCTION SystemUpdate {
@@ -190,9 +196,11 @@ FUNCTION GetUpdates {
 FUNCTION StandBy {
 	IF vehicle:HASKEY("standby-facing") {
 		IF (VANG(SHIP:FACING:VECTOR, vehicle["standby-facing"]["facing-vector"]) > 1) OR (SHIP:ANGULARVEL:MAG > 0.01) {
+			PRINT "Standby Tasks:     Facing Sun" AT(3,5).
 			vehicle["standby-facing"]["face"]().
 		}
 	}
+	PRINT "Standby Tasks:     None          " AT(3,5).
 }
 
 // Check for an on-going mission and let it complete.
@@ -208,12 +216,14 @@ IF EXISTS(configDir + configFile) {
 
 Notify("System loaded successfully! Running ProbeOS v" + version + ".").
 
+PRINT "Free Disk Space:   " + VOLUME(1):FREESPACE + "/" + VOLUME(1):CAPACITY + " " + ROUND(VOLUME(1):FREESPACE/VOLUME(1):CAPACITY*100,1) + "%              " AT(3,6).
+
 UNTIL FALSE {
 	IF HOMECONNECTION:ISCONNECTED {
-		PRINT "Connection Status: Connected!    " AT(3,4).
+		PRINT "Connection Status: Connected     " AT(3,4).
 		GetUpdates().
 	} ELSE {
-		PRINT "Connection Status: Not Connected!" AT(3,4).
+		PRINT "Connection Status: Not Connected " AT(3,4).
 		WAIT UNTIL HOMECONNECTION:ISCONNECTED.
 	}
 	IF KUNIVERSE:TIMEWARP:MODE = "RAILS" AND KUNIVERSE:TIMEWARP:RATE > 1 {
