@@ -93,7 +93,12 @@ FUNCTION GeostationaryTransferOrbit {
 	LOCAL desiredAp IS StationaryOrbitAltitude().
 
 	// Calculate time to get to the closest equatorial node where we'll do the maneuver
-	LOCAL timeToEq IS TimeToEquatorialNode().
+	LOCAL timeToAN IS TimeToTrueAnomaly(TA_EquatorialAN()).
+	LOCAL timeToDN IS TimeToTrueAnomaly(TA_EquatorialDN()).
+	LOCAL timeToEq IS MIN(timeToAN, timeToDN).
+
+	// Make sure that we have enough time to prepare for the maneuver. Otherwise, use next node instead
+	IF timeToEq < 60*4 { SET timeToEq TO MAX(timeToAN, timeToDN). }
 
 	// Get the spacecrafts position vector at the equatorial node
 	LOCAL posAtEq IS POSITIONAT(SHIP, TIME:SECONDS + timeToEq).
@@ -131,18 +136,24 @@ FUNCTION GeostationaryTransferOrbit {
 FUNCTION GTOApoapsisCorrection {
 	PARAMETER RcsForRotation IS FALSE.
 
+	// Check if correction is needed
 	IF ABS(SHIP:APOAPSIS - StationaryOrbitAltitude()) > 500 {
 
+		// Get prograde velocity
 		LOCAL dir IS SHIP:VELOCITY:ORBIT.
 
+		// Steer towards prograde
 		LOCK STEERING TO LOOKDIRUP(dir, SHIP:FACING:TOPVECTOR).
 
+		// Turn RCS on if required
 		IF RcsForRotation { RCS ON. }
 
+		// Wait for the steering to settle on target
 		WAIT UNTIL VANG(SHIP:FACING:VECTOR, dir) < 0.01 AND (SHIP:ANGULARVEL:MAG < 0.01).
 		WAIT 5.
 
 		RCS ON.
+		// Check which way to go and execute the correction maneuver
 		IF SHIP:APOAPSIS < StationaryOrbitAltitude() {
 			SET SHIP:CONTROL:FORE TO 1.
 			WAIT UNTIL SHIP:APOAPSIS >= StationaryOrbitAltitude()-1000.
@@ -158,6 +169,61 @@ FUNCTION GTOApoapsisCorrection {
 		}
 		RCS OFF.
 	}
+}
+
+// Creates a maneuver to match the orbital plane with your selected target
+FUNCTION MatchInclinationWithTarget {
+	// Make sure a tarket has been selected
+	IF NOT HASTARGET { RETURN 0. }
+	// Make sure that the target is either a vessel or a body
+	IF NOT TARGET:ISTYPE("Vessel") AND NOT TARGET:ISTYPE("Body") { RETURN 0. }
+	// Make sure that your target is orbiting the same body as your ship
+	IF NOT TARGET:HASBODY OR TARGET:BODY <> SHIP:BODY { RETURN 0. }
+
+	// Save the current time in case it changes during the calculations
+	LOCAL t IS TIME:SECONDS.
+
+	// Get the relative inclination between your orbit and targets orbit
+	LOCAL relativeInc IS RelativeInclinationTo(TARGET).
+	// If relative inclination is within 0.1 degree, just return as we're already matched
+	IF relativeInc < 0.1 { RETURN FALSE. }
+
+	// Calculate time to AN and DN
+	LOCAL timeToAN IS TimeToTrueAnomaly(TA_RelativeAN()).
+	LOCAL timeToDN IS TimeToTrueAnomaly(TA_RelativeDN()).
+
+	LOCAL timeToNode IS timeToAN.
+	LOCAL nodeType IS "AN".
+
+	// Select whether to do the maneuver at AN or DN
+	IF timeToAN < 60*4 {
+		SET timeToNode TO timeToDN.
+		SET nodeType TO "DN".
+	} ELSE IF timeToDN < timeToAN AND timeToDN > 60*4  {
+		SET timeToNode TO timeToDN.
+		SET nodeType TO "DN".
+	}
+
+	// Get position and velocity at the maneuver
+	LOCAL mnvPos IS POSITIONAT(SHIP, t+timeToNode).
+	LOCAL mnvVel IS VELOCITYAT(SHIP, t+timeToNode):ORBIT.
+
+	// Find axis of rotation of the velocity vector
+	LOCAL radialAtManeuver IS (mnvPos-BODY:POSITION):NORMALIZED.
+	// Based on node type, decide if the axis should be pointing towards or away from the planet
+	IF nodeType = "DN" { SET radialAtManeuver TO -radialAtManeuver. }
+
+	// Calculate the velocity vector of the final orbit at the maneuver 
+	LOCAL desiredVelocity IS Rodrigues(mnvVel, radialAtManeuver, relativeInc.
+	// Calculate change in velocity needed
+	LOCAL velocityDelta IS desiredVelocity - mnvVel.
+	// Create a maneuver node with the desired velocity change
+	LOCAL maneuverNode IS NodeFromVector(velocityDelta, t+timeToNode).
+	// Add maneuver to the flight path
+	ADD maneuverNode.
+
+	IF HASNODE { RETURN TRUE. }
+	RETURN FALSE.
 }
 
 // nodeFromVector - originally created by reddit user ElWanderer_KSP
