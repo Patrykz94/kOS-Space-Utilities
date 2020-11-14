@@ -53,7 +53,7 @@ FUNCTION OrbitalFlightPathAngle {
 	RETURN ARCTAN((ecc*SIN(trueAnomaly))/(1+ecc*COS(trueAnomaly))).
 }
 
-// Calculates the speed of the vessel at the point specified by true anomaly
+// Calculates the speed of the vessel at the point specified by current radius (altitude + body radius)
 FUNCTION OrbitalSpeed {
 	PARAMETER radius IS (BODY:RADIUS + OBT:ALTITUDE), semiMajaorAxis IS OBT:SEMIMAJORAXIS, orbitingBody IS OBT:BODY.
 
