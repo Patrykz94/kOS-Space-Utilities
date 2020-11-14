@@ -77,8 +77,8 @@ FUNCTION HardReset {
 }
 
 FUNCTION Notify {
-  PARAMETER message, msgDelay is 5, color IS YELLOW.
-  HUDTEXT("kOS: " + message, msgDelay, 2, 20, color, false).
+	PARAMETER message, msgDelay is 5, color IS YELLOW.
+	HUDTEXT("kOS: " + message, msgDelay, 2, 20, color, false).
 }
 
 FUNCTION DownloadFile {
