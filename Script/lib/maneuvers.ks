@@ -127,6 +127,7 @@ FUNCTION GeostationaryTransferOrbit {
 	// Add the maneuver node to the flight path
 	ADD maneuverNode.
 
+	WAIT 0.
 	IF HASNODE { RETURN TRUE. }
 	RETURN FALSE.
 }
@@ -169,6 +170,128 @@ FUNCTION GTOApoapsisCorrection {
 		}
 		RCS OFF.
 	}
+}
+
+// Match the orbital period perfectly with the desired orbital period
+// This should only be executed when the periods are already quite close to each other (after maneuver)
+FUNCTION OrbitalPeriodCorrection {
+	PARAMETER desiredPeriod.
+
+	// Get all parts and part module information ready
+	LOCAL allParts IS SHIP:PARTS.
+	LOCAL thrusters IS LIST().
+
+	FOR p IN allPARTS {
+		IF p:HASMODULE("ModuleRCSFX") { thrusters:ADD(p:GETMODULE("ModuleRCSFX")). }
+	}
+
+	// Get prograde velocity
+	LOCAL dir IS SHIP:VELOCITY:ORBIT.
+
+	// Steer towards prograde
+	LOCK STEERING TO LOOKDIRUP(dir, SHIP:FACING:TOPVECTOR).
+
+	// Wait for the steering to settle on target
+	WAIT UNTIL VANG(SHIP:FACING:VECTOR, dir) < 0.01 AND (SHIP:ANGULARVEL:MAG < 0.01).
+	WAIT 5.
+
+	// Sets the thrust limit of all RCS parts for extra fine control
+	FUNCTION SetRCSLimitTo {
+		PARAMETER limit IS 100.
+
+		FOR t IN thrusters {
+			IF t:HASFIELD("thrust limiter") { t:SETFIELD("thrust limiter", limit). }
+		}
+	}
+
+	RCS ON.
+	// Check which way to go and execute the correction maneuver
+	IF OBT:PERIOD < desiredPeriod {
+		SET SHIP:CONTROL:FORE TO 1.
+		WAIT UNTIL OBT:PERIOD >= desiredPeriod-10.
+		SET SHIP:CONTROL:FORE TO 0.2.
+		WAIT UNTIL OBT:PERIOD >= desiredPeriod-1.
+		SET SHIP:CONTROL:FORE TO 0.1.
+		WAIT UNTIL OBT:PERIOD >= desiredPeriod-0.1.
+		SetRCSLimitTo(5).
+		WAIT UNTIL OBT:PERIOD >= desiredPeriod-0.01.
+		SetRCSLimitTo(0.5).
+		WAIT UNTIL OBT:PERIOD >= desiredPeriod.
+		SET SHIP:CONTROL:FORE TO 0.
+	} ELSE {
+		SET SHIP:CONTROL:FORE TO -1.
+		WAIT UNTIL OBT:PERIOD <= desiredPeriod+10.
+		SET SHIP:CONTROL:FORE TO -0.2.
+		WAIT UNTIL OBT:PERIOD <= desiredPeriod+1.
+		SET SHIP:CONTROL:FORE TO -0.1.
+		WAIT UNTIL OBT:PERIOD <= desiredPeriod+0.1.
+		SetRCSLimitTo(5).
+		WAIT UNTIL OBT:PERIOD <= desiredPeriod+0.01.
+		SetRCSLimitTo(0.5).
+		WAIT UNTIL OBT:PERIOD <= desiredPeriod.
+		SET SHIP:CONTROL:FORE TO 0.
+	}
+
+	RCS OFF.
+	SetRCSLimitTo(100).
+}
+
+// Creates a maneuver to circularize the orbit at a specific time (usually time to apoapsis or equatorial nodes)
+// If inclination change is also required then the maneuver has to be done at one of the equatorial nodes
+FUNCTION CircularizationAt {
+	PARAMETER timeToManeuver IS ETA:APOAPSIS, incRequired IS OBT:INCLINATION.
+
+	// If inclination change is required, make sure that maneuver will take place at equator
+	LOCAL nodeType IS "NONE".
+	IF incRequired <> OBT:INCLINATION {
+		LOCAL timeToAN IS TimeToTrueAnomaly(TA_EquatorialAN()).
+		LOCAL timeToDN IS TimeToTrueAnomaly(TA_EquatorialDN()).
+		IF timeToManeuver < timeToAN + 30 AND timeToManeuver > timeToAN - 30 {
+			SET nodeType TO "AN".
+		} ELSE IF timeToManeuver < timeToDN + 30 AND timeToManeuver > timeToDN - 30 {
+			SET nodeType TO "DN".
+		} ELSE {
+			HUDTEXT("kOS: INCLINATION CHANGE MUST BE DONE AT EQUATORIAL NODE.", 30, 2, 20, RED, FALSE).
+			RETURN FALSE.
+		}
+	}
+	
+	// Save the current time in case it changes during the calculations
+	LOCAL t IS TIME:SECONDS.
+
+	// Get position and velocity at the maneuver
+	LOCAL mnvPos IS POSITIONAT(SHIP, t+timeToManeuver).
+	LOCAL mnvVel IS VELOCITYAT(SHIP, t+timeToManeuver):ORBIT.
+
+	// Find the radius at maneuver position and speed once in circular orbit
+	LOCAL radiusAtMnv IS BODY:ALTITUDEOF(mnvPos)+BODY:RADIUS.
+	LOCAL desiredSpeed IS OrbitalSpeed(radiusAtMnv, radiusAtMnv).
+
+	// Calculate the prograde direction and the velocity of circular orbit
+	LOCAL progradeAtMnv IS VXCL(mnvPos - BODY:POSITION, mnvVel):NORMALIZED.
+	LOCAL desiredVelocity IS progradeAtMnv * desiredSpeed.
+
+	// If we are also doing inclination change, rotate the final velocity vector to the inclination we want
+	IF nodeType <> "NONE" {
+		// Find axis of rotation of the velocity vector
+		LOCAL radialAtManeuver IS (mnvPos-BODY:POSITION):NORMALIZED.
+		// Based on node type, decide if the axis should be pointing towards or away from the planet
+		IF nodeType = "DN" { SET radialAtManeuver TO -radialAtManeuver. }
+
+		// Calculate the velocity vector of the final orbit at the maneuver 
+		SET desiredVelocity TO Rodrigues(desiredVelocity, radialAtManeuver, ABS(incRequired - OBT:INCLINATION)).
+	}
+
+	// Calculate change in velocity needed
+	LOCAL velocityDelta IS desiredVelocity - mnvVel.
+	// Create a maneuver node with the desired velocity change
+	LOCAL maneuverNode IS NodeFromVector(velocityDelta, t+timeToManeuver).
+	// Add maneuver to the flight path
+	ADD maneuverNode.
+
+	WAIT 0.
+	IF HASNODE { RETURN TRUE. }
+	RETURN FALSE.
 }
 
 // Creates a maneuver to match the orbital plane with your selected target
@@ -214,7 +337,7 @@ FUNCTION MatchInclinationWithTarget {
 	IF nodeType = "DN" { SET radialAtManeuver TO -radialAtManeuver. }
 
 	// Calculate the velocity vector of the final orbit at the maneuver 
-	LOCAL desiredVelocity IS Rodrigues(mnvVel, radialAtManeuver, relativeInc.
+	LOCAL desiredVelocity IS Rodrigues(mnvVel, radialAtManeuver, relativeInc).
 	// Calculate change in velocity needed
 	LOCAL velocityDelta IS desiredVelocity - mnvVel.
 	// Create a maneuver node with the desired velocity change
@@ -222,6 +345,7 @@ FUNCTION MatchInclinationWithTarget {
 	// Add maneuver to the flight path
 	ADD maneuverNode.
 
+	WAIT 0.
 	IF HASNODE { RETURN TRUE. }
 	RETURN FALSE.
 }
@@ -240,23 +364,66 @@ FUNCTION NodeFromVector {
 
 // Execute the next node
 FUNCTION ExecNode {
-	PARAMETER RCSRequired, autoWarp.
+	PARAMETER RCSRequired, addKACAlarm IS TRUE.
 	
+	LOCAL kacAlarmAdvance IS 30.
+
 	LOCAL n IS NEXTNODE.
 	LOCAL v IS n:BURNVECTOR.
 
 	LOCAL startTime IS TIME:SECONDS + n:ETA - BurnTime(v:MAG/2).
+
+	IF addKACAlarm AND ADDONS:AVAILABLE("KAC") {
+		ADDALARM("Raw", startTime - kacAlarmAdvance, "Maneuver Alarm", SHIP:NAME + " has a scheduled maneuver in " + kacAlarmAdvance + " seconds.").
+	}
+
 	LOCK STEERING TO v.
 	IF RCSRequired { RCS ON. }
 	WAIT UNTIL VANG(SHIP:FACING:VECTOR, v) < 0.1 AND (SHIP:ANGULARVEL:MAG < 0.01).
 	WAIT 5.
-
-	IF autoWarp { WAIT 1. WARPTO(startTime - 60). }
+	HUDTEXT("kOS: Pointing at the Maneuver. Timewarp can be used.", 10, 2, 20, GREEN, FALSE).
 
 	WAIT UNTIL TIME:SECONDS >= startTime -5.
 	SET SHIP:CONTROL:FORE TO 1.
 	WAIT UNTIL TIME:SECONDS >= startTime.
 	SET SHIP:CONTROL:FORE TO 0.
+	LOCK THROTTLE TO MAX(MIN(BurnTime(n:BURNVECTOR:MAG)/2, 1),0.05).
+	WAIT UNTIL VDOT(n:BURNVECTOR, v) < 0.
+	LOCK THROTTLE TO 0.
+	UNLOCK STEERING.
+	RCS OFF.
+}
+
+// Execute the next node but use MechJeb for attitude control.
+// kOS will notify the user that he needs to use MechJeb aim at the Maneuver Node
+// This should be used for any vehicle that relies on RCS for its on-orbit attitude control.
+FUNCTION ExecNodeMJ {
+	PARAMETER RCSRequired, addKACAlarm IS TRUE.
+
+	LOCAL kacAlarmAdvance IS 30.
+
+	LOCAL n IS NEXTNODE.
+	LOCAL v IS n:BURNVECTOR.
+
+	LOCAL startTime IS TIME:SECONDS + n:ETA - BurnTime(v:MAG/2).
+
+	IF addKACAlarm AND ADDONS:AVAILABLE("KAC") {
+		ADDALARM("Raw", startTime - kacAlarmAdvance, "Maneuver Alarm", SHIP:NAME + " has a scheduled maneuver in " + kacAlarmAdvance + " seconds.").
+	}
+	
+	IF RCSRequired { RCS ON. }
+	UNTIL VANG(SHIP:FACING:VECTOR, v) < 0.1 AND (SHIP:ANGULARVEL:MAG < 0.01) {
+		HUDTEXT("kOS: Use MechJeb to point at the Maneuver Node.", 1, 2, 20, RED, FALSE).
+		WAIT 1.
+	}
+	WAIT 5.
+	HUDTEXT("kOS: Pointing at the Maneuver. Timewarp can be used.", 10, 2, 20, GREEN, FALSE).
+
+	WAIT UNTIL TIME:SECONDS >= startTime -5.
+	SET SHIP:CONTROL:FORE TO 1.
+	WAIT UNTIL TIME:SECONDS >= startTime.
+	SET SHIP:CONTROL:FORE TO 0.
+	LOCK STEERING TO v.
 	LOCK THROTTLE TO MAX(MIN(BurnTime(n:BURNVECTOR:MAG)/2, 1),0.05).
 	WAIT UNTIL VDOT(n:BURNVECTOR, v) < 0.
 	LOCK THROTTLE TO 0.
