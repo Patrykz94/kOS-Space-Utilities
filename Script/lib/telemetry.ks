@@ -282,6 +282,20 @@ FUNCTION StationaryOrbitAltitude {
 	RETURN ((orbitBody:MU * orbitBody:ROTATIONPERIOD^2)/(4*CONSTANT:PI^2))^(1.0/3.0)-orbitBody:RADIUS.
 }
 
+// Orbital period at specified semi-major axis
+FUNCTION PeriodAtSMA {
+	PARAMETER sma IS OBT:SEMIMAJORAXIS, orbitBody IS OBT:BODY.
+
+	RETURN 2*CONSTANT:PI*SQRT(sma^3/orbitBody:MU).
+}
+
+// Semi-major axis which would have specified orbital period
+FUNCTION SMAWithPeriod {
+	PARAMETER period IS OBT:PERIOD, orbitBody IS OBT:BODY.
+
+	RETURN ((orbitBody:MU * period^2)/(4*CONSTANT:PI^2))^(1.0/3.0).
+}
+
 // Rodrigues vector rotation formula - Borrowed from PEGAS
 FUNCTION Rodrigues {
 	PARAMETER inVector. //  Expects a vector

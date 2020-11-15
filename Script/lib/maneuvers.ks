@@ -236,10 +236,90 @@ FUNCTION OrbitalPeriodCorrection {
 	SetRCSLimitTo(100).
 }
 
+// Returns the delta v necessary to move to specified longitude as well as number of orbits
+// to wait in the lower/higher orbit and the temporary orbital period. Only really meant for GTO sats
+FUNCTION MoveToLongitudeDv {
+	PARAMETER lngInitial, lngFinal, altFinal, maxDv, passHeight IS "any".
+
+	// Make sure the deltaV budget is > 0
+	IF maxDv <= 0 { RETURN LEXICON("deltaV", 0, "orbits", 0, "period", 0). }
+
+	// If no pass height specified the figure out the best one
+	IF passHeight = "any" {
+		LOCAL diff IS lngFinal-lngInitial.
+		IF diff > 0 {
+			IF ABS(diff) > 180 {
+				SET passHeight TO "under".
+			} ELSE {
+				SET passHeight TO "over".
+			}
+		} ELSE IF diff < 0 {
+			IF ABS(diff) > 180 {
+				SET passHeight TO "over".
+			} ELSE {
+				SET passHeight TO "under".
+			}
+		}
+	}
+
+	// Track number of orbits for thie calculations below
+	LOCAL orbits IS 1.
+	// Calculate the orbital period of orbit before maneuvering
+	LOCAL period IS PeriodAtSMA(altFinal + BODY:RADIUS).
+
+	IF passHeight = "under" {
+		UNTIL FALSE {
+			// Calculate a new period, semi-major axis and periapsis
+			LOCAL tempPeriod IS period-ABS(diff/orbits)/360*period.
+			LOCAL smaRequired IS SMAWithPeriod(tempPeriod).
+			LOCAL pgRequired IS smaRequired*2-BODY:RADIUS*2-altFinal.
+
+			// Make sure the new periapsis is above the atmosphere
+			IF pgRequired > BODY:ATM:HEIGHT + 25000 {
+				// Calculate the orbital speeds
+				LOCAL obtEcc IS OrbitalEccentricity(altFinal, pgRequired).
+				LOCAL obtSpeedAtAP IS OrbitalSpeed(OrbitalRadius(0, altFinal + BODY:RADIUS, 0), altFinal + BODY:RADIUS).
+				LOCAL newObtSpeedAtAP IS OrbitalSpeed(OrbitalRadius(0, smaRequired, obtEcc), smaRequired).
+				LOCAL velDiff IS newObtSpeedAtAP - obtSpeedAtAP.
+				// If change in velocity is below the max level, return the results
+				IF ABS(velDiff) <= maxDv/2 {
+					RETURN LEXICON("deltaV", velDiff, "orbits", orbits, "period", tempPeriod).
+				}
+			}
+			// If this calculation did not pass then add another orbit and try again
+			SET orbits TO orbits+1.
+		}
+	} ELSE IF passHeight = "over" {
+		UNTIL FALSE {
+			// Calculate a new period, semi-major axis and apoapsis
+			LOCAL tempPeriod IS period+ABS(diff/orbits)/360*period.
+			LOCAL smaRequired IS SMAWithPeriod(tempPeriod).
+			LOCAL apRequired IS smaRequired*2-BODY:RADIUS*2-altFinal.
+
+			// Make sure the new apoapsis is within the sphere of influence
+			IF apRequired < BODY:SOIRADIUS - BODY:RADIUS - 25000 {
+				// Calculate the orbital speeds
+				LOCAL obtEcc IS OrbitalEccentricity(altFinal, apRequired).
+				LOCAL obtSpeedAtPE IS OrbitalSpeed(OrbitalRadius(0, altFinal + BODY:RADIUS, 0), altFinal + BODY:RADIUS).
+				LOCAL newObtSpeedAtPE IS OrbitalSpeed(OrbitalRadius(0, smaRequired, obtEcc), smaRequired).
+				LOCAL velDiff IS newObtSpeedAtPE - obtSpeedAtPE.
+				// If change in velocity is below the max level, return the results
+				IF ABS(velDiff) <= maxDv/2 {
+					RETURN LEXICON("deltaV", velDiff, "orbits", orbits, "period", tempPeriod).
+				}
+			}
+			// If this calculation did not pass then add another orbit and try again
+			SET orbits TO orbits+1.
+		}
+	}
+	// Incorrect papameters have been passed, return 0s
+	RETURN LEXICON("deltaV", 0, "orbits", 0, "period", 0).
+}
+
 // Creates a maneuver to circularize the orbit at a specific time (usually time to apoapsis or equatorial nodes)
 // If inclination change is also required then the maneuver has to be done at one of the equatorial nodes
 FUNCTION CircularizationAt {
-	PARAMETER timeToManeuver IS ETA:APOAPSIS, incRequired IS OBT:INCLINATION.
+	PARAMETER timeToManeuver IS ETA:APOAPSIS, incRequired IS OBT:INCLINATION, overWaypoint IS FALSE.
 
 	// If inclination change is required, make sure that maneuver will take place at equator
 	LOCAL nodeType IS "NONE".
@@ -255,6 +335,17 @@ FUNCTION CircularizationAt {
 			RETURN FALSE.
 		}
 	}
+
+	// Determine the type of overWaypoint parameter provided
+	LOCAL long IS -1.
+	LOCAL lngMnv IS FALSE.
+	IF overWaypoint:ISTYPE("String") {
+		SET long TO WAYPOINT(overWaypoint):GEPOSITION:LNG.
+	} ELSE IF overWaypoint:ISTYPE("geoCoordinates") {
+		SET long TO overWaypoint:LNG.
+	} ELSE IF overWaypoint:ISTYPE("Scalar") {
+		SET long TO MOD(overWaypoint, 360).
+	}
 	
 	// Save the current time in case it changes during the calculations
 	LOCAL t IS TIME:SECONDS.
@@ -266,6 +357,13 @@ FUNCTION CircularizationAt {
 	// Find the radius at maneuver position and speed once in circular orbit
 	LOCAL radiusAtMnv IS BODY:ALTITUDEOF(mnvPos)+BODY:RADIUS.
 	LOCAL desiredSpeed IS OrbitalSpeed(radiusAtMnv, radiusAtMnv).
+
+	// Check whether we need to change the maneuver to arrive at a specific waypoint
+	IF long <> -1 {
+		LOCAL lngInitial IS MOD(BODY:GEOPOSITIONOF(mnvPos):LNG + 360*(BODY:ROTATIONPERIOD/timeToManeuver),360).
+		SET lngMnv TO MoveToLongitudeDv(lngInitial, long, BODY:ALTITUDEOF(mnvPos), 500, "under").
+		SET desiredSpeed TO desiredSpeed + lngMnv["deltaV"].
+	}
 
 	// Calculate the prograde direction and the velocity of circular orbit
 	LOCAL progradeAtMnv IS VXCL(mnvPos - BODY:POSITION, mnvVel):NORMALIZED.
@@ -290,7 +388,10 @@ FUNCTION CircularizationAt {
 	ADD maneuverNode.
 
 	WAIT 0.
-	IF HASNODE { RETURN TRUE. }
+	IF HASNODE {
+		IF lngMnv <> FALSE AND lngMNV:period <> 0 { RETURN lngMnv. }
+		RETURN TRUE.
+	}
 	RETURN FALSE.
 }
 
