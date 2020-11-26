@@ -2,7 +2,7 @@
 WAIT UNTIL SHIP:UNPACKED.
 CLEARSCREEN.
 SET SHIP:CONTROL:PILOTMAINTHROTTLE TO 0.
-SET VOLUME(1):NAME TO SHIP:NAME + "_" + CORE:TAG.
+SET VOLUME(1):NAME TO CHOOSE SHIP:NAME IF CORE:TAG = "" ELSE SHIP:NAME + "_" + CORE:TAG.
 LOCAL version IS 1.
 PRINT "CPU Name:          " + VOLUME(1):NAME AT(3,1).
 PRINT "Currently Running: ProbeOS v" + version AT(3,2).
@@ -82,7 +82,7 @@ FUNCTION Notify {
 }
 
 FUNCTION DownloadFile {
-	PARAMETER fileDir, fileName, isTemp IS FALSE.
+	PARAMETER fileDir, fileName, isTemp IS FALSE, compilingRequired IS FALSE.
 	WAIT 2.
 	IF NOT HOMECONNECTION:ISCONNECTED {
 		Notify("ERROR: Donwloading update failed. Connection lost.", 5, RED).
@@ -91,17 +91,21 @@ FUNCTION DownloadFile {
 		Notify("ERROR: Donwloading update failed. File " + fileName + " not found.", 5, RED).
 		RETURN FALSE.
 	} ELSE {
+		LOCAL newFileName IS fileName.
 		IF EXISTS(downloadsDir + fileName) { DELETEPATH(downloadsDir + fileName). }
-		COPYPATH(fileDir + fileName, downloadsDir + fileName).
+		IF compilingRequired {
+			SET newFileName TO fileName + "m".
+			COMPILE fileDir + fileName TO downloadsDir + newFileName.
+		} ELSE { COPYPATH(fileDir + fileName, downloadsDir + fileName). }
 		IF fileName:CONTAINS("_missionUpdate.ks") OR fileName:CONTAINS("_config.ks") { MOVEPATH(fileDir + fileName, fileDir + "uploaded_" + fileName). }
-		IF isTemp { MOVEPATH(downloadsDir + fileName, tempDir + fileName). }
+		IF isTemp { MOVEPATH(downloadsDir + newFileName, tempDir + newFileName). }
 		RETURN TRUE.
 	}
 }
 
 FUNCTION DownloadLib {
 	PARAMETER fileName.
-	RETURN DownloadFile(libsDir, fileName, TRUE).
+	RETURN DownloadFile(libsDir, fileName, TRUE, TRUE).
 }
 
 FUNCTION SystemUpdate {
