@@ -1,10 +1,13 @@
+@LAZYGLOBAL OFF.
+
 // Time to complete a maneuver
 FUNCTION BurnTime {
 	PARAMETER dv.
-	SET ens TO LIST().
+	LOCAL ens IS LIST().
 	ens:CLEAR.
-	SET ens_thrust TO 0.
-	SET ens_isp TO 0.
+	LOCAL ens_thrust IS 0.
+	LOCAL ens_isp IS 0.
+	LOCAL myengines IS LIST().
 	LIST ENGINES IN myengines.
 
 	FOR en IN myengines {
@@ -34,25 +37,25 @@ FUNCTION BurnTime {
 
 // Velocity at a circular orbit at the given altitude
 FUNCTION OrbitalVelocityAt{
-	PARAMETER altitude.
-	PARAMETER body IS SHIP:OBT:BODY.
+	PARAMETER altitudeIn.
+	PARAMETER obtBody IS OBT:BODY.
 
-	RETURN SQRT(body:MU/(body:RADIUS+altitude)).
+	RETURN SQRT(obtBody:MU/(obtBody:RADIUS+altitudeIn)).
 }
 
 // Delta v requirements for Hohmann Transfer
 FUNCTION SimpleHohmanDv {
 	PARAMETER desiredAltitude.
 
-	SET u  TO SHIP:OBT:BODY:MU.
-	SET r1 TO SHIP:OBT:SEMIMAJORAXIS.
-	SET r2 TO desiredAltitude + SHIP:OBT:BODY:RADIUS.
+	LOCAL u  IS SHIP:OBT:BODY:MU.
+	LOCAL r1 IS SHIP:OBT:SEMIMAJORAXIS.
+	LOCAL r2 IS desiredAltitude + SHIP:OBT:BODY:RADIUS.
 
 	// v1
-	SET v1 TO SQRT(u / r1) * (SQRT((2 * r2) / (r1 + r2)) - 1).
+	LOCAL v1 IS SQRT(u / r1) * (SQRT((2 * r2) / (r1 + r2)) - 1).
 
 	// v2
-	SET v2 TO SQRT(u / r2) * (1 - SQRT((2 * r1) / (r1 + r2))).
+	LOCAL v2 IS SQRT(u / r2) * (1 - SQRT((2 * r1) / (r1 + r2))).
 
 	// Returns list of 2 values, first one is the dv for initial transfer orbit and second is for circularization
 	RETURN LIST(v1, v2).
@@ -168,6 +171,7 @@ FUNCTION GTOApoapsisCorrection {
 			WAIT UNTIL SHIP:APOAPSIS <= StationaryOrbitAltitude().
 			SET SHIP:CONTROL:FORE TO 0.
 		}
+		UNLOCK STEERING.
 		RCS OFF.
 	}
 }
@@ -192,7 +196,7 @@ FUNCTION OrbitalPeriodCorrection {
 	LOCK STEERING TO LOOKDIRUP(dir, SHIP:FACING:TOPVECTOR).
 
 	// Wait for the steering to settle on target
-	WAIT UNTIL VANG(SHIP:FACING:VECTOR, dir) < 0.01 AND (SHIP:ANGULARVEL:MAG < 0.01).
+	WAIT UNTIL VANG(SHIP:FACING:VECTOR, dir) < 0.1 AND (SHIP:ANGULARVEL:MAG < 0.01).
 	WAIT 5.
 
 	// Sets the thrust limit of all RCS parts for extra fine control
@@ -231,7 +235,7 @@ FUNCTION OrbitalPeriodCorrection {
 		WAIT UNTIL OBT:PERIOD <= desiredPeriod.
 		SET SHIP:CONTROL:FORE TO 0.
 	}
-
+	UNLOCK STEERING.
 	RCS OFF.
 	SetRCSLimitTo(100).
 }
@@ -239,81 +243,222 @@ FUNCTION OrbitalPeriodCorrection {
 // Returns the delta v necessary to move to specified longitude as well as number of orbits
 // to wait in the lower/higher orbit and the temporary orbital period. Only really meant for GTO sats
 FUNCTION MoveToLongitudeDv {
-	PARAMETER lngInitial, lngFinal, altFinal, maxDv, passHeight IS "any".
+	PARAMETER lngInitial, lngFinal, altFinal, maxDv, tempOrbit IS "any".
 
 	// Make sure the deltaV budget is > 0
 	IF maxDv <= 0 { RETURN LEXICON("deltaV", 0, "orbits", 0, "period", 0). }
 
-	// If no pass height specified the figure out the best one
-	IF passHeight = "any" {
-		LOCAL diff IS lngFinal-lngInitial.
-		IF diff > 0 {
-			IF ABS(diff) > 180 {
-				SET passHeight TO "under".
-			} ELSE {
-				SET passHeight TO "over".
-			}
-		} ELSE IF diff < 0 {
-			IF ABS(diff) > 180 {
-				SET passHeight TO "over".
-			} ELSE {
-				SET passHeight TO "under".
-			}
-		}
-	}
+	LOCAL diffUnder IS MOD((lngFinal+360)-(lngInitial+360), 360).
+	LOCAL diffOver IS MOD((lngInitial+360)-(lngFinal+360), 360).
+
+	// Data for under and over maneuver types
+	LOCAL underData IS LEXICON("deltaV", 0, "orbits", 0, "period", 0).
+	LOCAL overData IS LEXICON("deltaV", 0, "orbits", 0, "period", 0).
 
 	// Track number of orbits for thie calculations below
-	LOCAL orbits IS 1.
+	LOCAL orbitsUnder IS 1.
+	LOCAL orbitsOver IS 1.
 	// Calculate the orbital period of orbit before maneuvering
 	LOCAL period IS PeriodAtSMA(altFinal + BODY:RADIUS).
 
-	IF passHeight = "under" {
-		UNTIL FALSE {
-			// Calculate a new period, semi-major axis and periapsis
-			LOCAL tempPeriod IS period-ABS(diff/orbits)/360*period.
-			LOCAL smaRequired IS SMAWithPeriod(tempPeriod).
-			LOCAL pgRequired IS smaRequired*2-BODY:RADIUS*2-altFinal.
+	// Calculate the under orbit first
+	UNTIL FALSE {
+		// Calculate a new period, semi-major axis and periapsis
+		LOCAL tempPeriod IS period-ABS(MOD(diffUnder+360, 360))/360*period/orbitsUnder.
+		LOCAL smaRequired IS SMAWithPeriod(tempPeriod).
+		LOCAL peRequired IS smaRequired*2-BODY:RADIUS*2-altFinal.
 
-			// Make sure the new periapsis is above the atmosphere
-			IF pgRequired > BODY:ATM:HEIGHT + 25000 {
-				// Calculate the orbital speeds
-				LOCAL obtEcc IS OrbitalEccentricity(altFinal, pgRequired).
-				LOCAL obtSpeedAtAP IS OrbitalSpeed(OrbitalRadius(0, altFinal + BODY:RADIUS, 0), altFinal + BODY:RADIUS).
-				LOCAL newObtSpeedAtAP IS OrbitalSpeed(OrbitalRadius(0, smaRequired, obtEcc), smaRequired).
-				LOCAL velDiff IS newObtSpeedAtAP - obtSpeedAtAP.
-				// If change in velocity is below the max level, return the results
-				IF ABS(velDiff) <= maxDv/2 {
-					RETURN LEXICON("deltaV", velDiff, "orbits", orbits, "period", tempPeriod).
-				}
+		// Make sure the new periapsis is above the atmosphere
+		IF peRequired > BODY:ATM:HEIGHT + 25000 {
+			// Calculate the orbital speeds
+			LOCAL obtEcc IS OrbitalEccentricity(altFinal, peRequired).
+			LOCAL obtSpeedAtAP IS OrbitalSpeed(OrbitalRadius(0, altFinal + BODY:RADIUS, 0), altFinal + BODY:RADIUS).
+			LOCAL newObtSpeedAtAP IS OrbitalSpeed(OrbitalRadius(180, smaRequired, obtEcc), smaRequired).
+			LOCAL velDiff IS newObtSpeedAtAP - obtSpeedAtAP.
+			// If change in velocity is below the max level, return the results
+			IF ABS(velDiff) <= maxDv/2 {
+				SET underData TO LEXICON("deltaV", velDiff, "orbits", orbitsUnder, "period", tempPeriod).
+				BREAK.
 			}
-			// If this calculation did not pass then add another orbit and try again
-			SET orbits TO orbits+1.
 		}
-	} ELSE IF passHeight = "over" {
-		UNTIL FALSE {
-			// Calculate a new period, semi-major axis and apoapsis
-			LOCAL tempPeriod IS period+ABS(diff/orbits)/360*period.
-			LOCAL smaRequired IS SMAWithPeriod(tempPeriod).
-			LOCAL apRequired IS smaRequired*2-BODY:RADIUS*2-altFinal.
+		// If this calculation did not pass then add another orbit and try again
+		SET orbitsUnder TO orbitsUnder+1.
+	}
+	// Calculate the over orbit first
+	UNTIL FALSE {
+		// Calculate a new period, semi-major axis and apoapsis
+		LOCAL tempPeriod IS period+ABS(MOD(diffOver+360, 360))/360*period/orbitsOver.
+		LOCAL smaRequired IS SMAWithPeriod(tempPeriod).
+		LOCAL apRequired IS smaRequired*2-BODY:RADIUS*2-altFinal.
 
-			// Make sure the new apoapsis is within the sphere of influence
-			IF apRequired < BODY:SOIRADIUS - BODY:RADIUS - 25000 {
-				// Calculate the orbital speeds
-				LOCAL obtEcc IS OrbitalEccentricity(altFinal, apRequired).
-				LOCAL obtSpeedAtPE IS OrbitalSpeed(OrbitalRadius(0, altFinal + BODY:RADIUS, 0), altFinal + BODY:RADIUS).
-				LOCAL newObtSpeedAtPE IS OrbitalSpeed(OrbitalRadius(0, smaRequired, obtEcc), smaRequired).
-				LOCAL velDiff IS newObtSpeedAtPE - obtSpeedAtPE.
-				// If change in velocity is below the max level, return the results
-				IF ABS(velDiff) <= maxDv/2 {
-					RETURN LEXICON("deltaV", velDiff, "orbits", orbits, "period", tempPeriod).
-				}
+		// Make sure the new apoapsis is within the sphere of influence
+		IF apRequired < BODY:SOIRADIUS - BODY:RADIUS - 25000 {
+			// Calculate the orbital speeds
+			LOCAL obtEcc IS OrbitalEccentricity(apRequired, altFinal).
+			LOCAL obtSpeedAtPE IS OrbitalSpeed(OrbitalRadius(0, altFinal + BODY:RADIUS, 0), altFinal + BODY:RADIUS).
+			LOCAL newObtSpeedAtPE IS OrbitalSpeed(OrbitalRadius(0, smaRequired, obtEcc), smaRequired).
+			LOCAL velDiff IS newObtSpeedAtPE - obtSpeedAtPE.
+			// If change in velocity is below the max level, return the results
+			IF ABS(velDiff) <= maxDv/2 {
+				SET overData TO LEXICON("deltaV", velDiff, "orbits", orbitsOver, "period", tempPeriod).
+				BREAK.
 			}
-			// If this calculation did not pass then add another orbit and try again
-			SET orbits TO orbits+1.
+		}
+		// If this calculation did not pass then add another orbit and try again
+		SET orbitsOver TO orbitsOver+1.
+	}
+	IF tempOrbit = "over" { RETURN overData. }
+	ELSE IF tempOrbit = "under" { RETURN underData. }
+	ELSE IF tempOrbit = "any" {
+		IF orbitsUnder < orbitsOver { RETURN underData. }
+		ELSE IF orbitsUnder > orbitsOver { RETURN overData. }
+		ELSE {
+			IF underData:deltaV < overData:deltaV { RETURN underData. }
+			ELSE { RETURN overData. }
 		}
 	}
-	// Incorrect papameters have been passed, return 0s
+	// Incorrect parameters have been passed, return 0s
 	RETURN LEXICON("deltaV", 0, "orbits", 0, "period", 0).
+}
+
+// Calculates the initial maneuver that will get you a closest approach to target
+// Assumes that you already matched your inclination with target
+FUNCTION ManeuverToClosestApproach {
+	// Make sure a target has been selected
+	IF NOT HASTARGET { RETURN 0. }
+	// Make sure that the target is either a vessel or a body
+	IF NOT TARGET:ISTYPE("Vessel") { RETURN 0. }
+	// Make sure that your target is orbiting the same body as your ship
+	IF NOT TARGET:HASBODY OR TARGET:BODY <> SHIP:BODY { RETURN 0. }
+
+	// Save the current time to use with all calculations
+	LOCAL t IS TIME:SECONDS.
+
+	// Get the closest approach lexicon
+	LOCAL closestApproach IS GetClosestApproach().
+	// Calculate how long will it take your target to get to the closest approach
+	LOCAL targetEtaCA IS closestApproach:targetETA.
+	// Get targets positiona at closest approach
+	LOCAL targetCaPos IS POSITIONAT(TARGET, t+targetEtaCA).
+	// Now calculate the time it will take us to get to the opposite side of closest approach
+	LOCAL timeToMnvPos IS TimeToTrueAnomaly(TA_TargetToShip(closestApproach:targetTA+180)).
+
+	// Now calculate the deltaV to change our orbit to the closest approach
+	LOCAL mnvVel IS VELOCITYAT(SHIP, t+timeToMnvPos):ORBIT.
+	LOCAL mnvPos IS POSITIONAT(SHIP, t+timeToMnvPos).
+	LOCAL mnvPrograde IS VXCL(mnvPos - BODY:POSITION, mnvVel):NORMALIZED.
+	LOCAL transferSMA IS (BODY:ALTITUDEOF(mnvPos)+BODY:ALTITUDEOF(targetCaPos)+BODY:RADIUS*2)/2.
+	LOCAL transferPeriod IS PeriodAtSMA(transferSMA).
+	LOCAL mnvEndSpeed IS OrbitalSpeed(BODY:ALTITUDEOF(mnvPos)+BODY:RADIUS, transferSMA).
+	LOCAL mnvDv IS mnvPrograde*mnvEndSpeed - mnvVel.
+
+	// Calculate in how many orbits we'll need to execute this maneuver
+	LOCAL orbits IS 0.
+	// Make a copy of targets ETA to Closest approach for use in calculations below
+	LOCAL targetToCA IS targetEtaCA.
+	IF transferPeriod < TARGET:OBT:PERIOD {
+		// If our ship gets to the closest approach before the target, then we need to do our maneuver at the next close approach
+		UNTIL targetToCA < (timeToMnvPos + transferPeriod/2) { SET targetToCA TO targetToCA - TARGET:OBT:PERIOD. PRINT "TEST". }
+	} ELSE {
+		// If our ship gets to the closest approach before the target, then we need to do our maneuver at the next close approach
+		UNTIL targetToCA > (timeToMnvPos + transferPeriod/2) { SET targetToCA TO targetToCA + TARGET:OBT:PERIOD. }
+	}
+	LOCAL targetCaArrivalDiff IS targetToCA - (timeToMnvPos + transferPeriod/2).
+	PRINT ROUND(targetCaArrivalDiff).
+
+	// Depending on whether our transfer orbit period will be lower or higher,
+	// than our targets orbital period, use an appropraite condition in the loop below
+	LOCAL condition IS { RETURN targetCaArrivalDiff > 0. }.
+	IF transferPeriod > TARGET:OBT:PERIOD { SET condition TO { RETURN targetCaArrivalDiff < 0. }. }
+
+	// Keep adding 1 orbit untill we find the lowest negative/positive time delta (depending on current orbits).
+	UNTIL condition() {
+		SET orbits TO orbits + 1.
+		SET targetCaArrivalDiff TO (targetToCA + TARGET:OBT:PERIOD * orbits) - (timeToMnvPos + transferPeriod/2 + OBT:PERIOD * orbits).
+	}
+	SET orbits TO orbits - 1.
+	// Now get the final eta to maneuver
+	LOCAL mnvEta IS timeToMnvPos + OBT:PERIOD * orbits.
+	// Create a maneuver node for the transfer burn
+	LOCAL transferBurn IS NodeFromVector(mnvDv, t+mnvEta).
+	ADD transferBurn.
+	
+	WAIT 0.
+	IF HASNODE { RETURN TRUE. }
+	RETURN FALSE.
+}
+
+// Fine tune the closest approach by calculating a target orbital period that will end in an intercept
+// after one full orbit. Intecept in this case means a closest approach with very small separation
+FUNCTION FineTuneClosestApproach {
+	// Make sure a tarket has been selected
+	IF NOT HASTARGET { RETURN 0. }
+	// Make sure that the target is either a vessel or a body
+	IF NOT TARGET:ISTYPE("Vessel") { RETURN 0. }
+	// Make sure that your target is orbiting the same body as your ship
+	IF NOT TARGET:HASBODY OR TARGET:BODY <> SHIP:BODY { RETURN 0. }
+
+	// Get closest approach data
+	LOCAL closestApproach IS GetClosestApproach().
+
+	// Get targets ETA to the closest approach on it's next orbit pass
+	LOCAL targetEtaToCA IS closestApproach:targetETA + TARGET:OBT:PERIOD.
+	// Calculate what orbital period we should have to intercept target at next orbit and get SMA with that period
+	LOCAL desiredObtPeriod IS targetEtaToCA - closestApproach:ETA.
+	LOCAL desiredObtSMA IS SMAWithPeriod(desiredObtPeriod).
+
+	// Get position and velocity at the closest approach maneuver
+	LOCAL mnvVel IS VELOCITYAT(SHIP, TIME:SECONDS+closestApproach:ETA):ORBIT.
+	LOCAL mnvPos IS POSITIONAT(SHIP, TIME:SECONDS+closestApproach:ETA).
+
+	// Calculate the velocity after the maneuver
+	LOCAL desiredOrbitPrograde IS mnvVel:NORMALIZED.
+	LOCAL desiredOrbitSpeed IS OrbitalSpeed(BODY:ALTITUDEOF(mnvPos) + BODY:RADIUS, desiredObtSMA).
+	LOCAL desiredVelocity IS desiredOrbitPrograde * desiredOrbitSpeed.
+
+	// Calculate the transfer delta velocity and create the maneuver node
+	LOCAL mnvDeltaV IS desiredVelocity - mnvVel.		
+	LOCAL maneuverNode IS NodeFromVector(mnvDeltaV, TIME:SECONDS + closestApproach:ETA).
+	ADD maneuverNode.
+	
+	WAIT 0.
+	IF HASNODE { RETURN TRUE. }
+	RETURN FALSE.
+}
+
+// Once the closest approach is very close (<2.5km separation is recommended) Set up a maneuver to kill all the remaining relative velocity
+// This maneuver completes the Randezvous
+FUNCTION MatchVelocityWithTarget {
+	// Make sure a tarket has been selected
+	IF NOT HASTARGET { RETURN 0. }
+	// Make sure that the target is either a vessel or a body
+	IF NOT TARGET:ISTYPE("Vessel") { RETURN 0. }
+	// Make sure that your target is orbiting the same body as your ship
+	IF NOT TARGET:HASBODY OR TARGET:BODY <> SHIP:BODY { RETURN 0. }
+
+	// Get closest approach data
+	LOCAL closestApproach IS GetClosestApproach().
+
+	// Get ETA to closest approach
+	LOCAL mnvEta IS closestApproach:ETA.
+
+	// Get separation at closest approach
+	LOCAL mnvSep IS SeparationFromTargetAt(TIME:SECONDS+mnvEta).
+	LOCAL nextObtSep IS SeparationFromTargetAt(TIME:SECONDS+mnvEta+OBT:PERIOD).
+	IF nextObtSep < mnvSep { SET mnvEta TO mnvEta + OBT:PERIOD. }
+
+	// Get our velocity and targets velocity at the maneuver
+	LOCAL mnvVel IS VELOCITYAT(SHIP, TIME:SECONDS+mnvEta):ORBIT.
+	LOCAL mnvTargetVel IS VELOCITYAT(TARGET, TIME:SECONDS+mnvEta):ORBIT.
+
+	// Calculate the delta velocity and create the maneuver node
+	LOCAL mnvDeltaV IS mnvTargetVel - mnvVel.
+	LOCAL maneuverNode IS NodeFromVector(mnvDeltaV, TIME:SECONDS + mnvEta).
+	ADD maneuverNode.
+	
+	WAIT 0.
+	IF HASNODE { RETURN TRUE. }
+	RETURN FALSE.
 }
 
 // Creates a maneuver to circularize the orbit at a specific time (usually time to apoapsis or equatorial nodes)
@@ -321,26 +466,31 @@ FUNCTION MoveToLongitudeDv {
 FUNCTION CircularizationAt {
 	PARAMETER timeToManeuver IS ETA:APOAPSIS, incRequired IS OBT:INCLINATION, overWaypoint IS FALSE.
 
+	// Find the modulo of the time to maneuver
+	LOCAL timeToManeuverMod IS MOD(timeToManeuver, OBT:PERIOD).
+
 	// If inclination change is required, make sure that maneuver will take place at equator
 	LOCAL nodeType IS "NONE".
 	IF incRequired <> OBT:INCLINATION {
 		LOCAL timeToAN IS TimeToTrueAnomaly(TA_EquatorialAN()).
 		LOCAL timeToDN IS TimeToTrueAnomaly(TA_EquatorialDN()).
-		IF timeToManeuver < timeToAN + 30 AND timeToManeuver > timeToAN - 30 {
+		IF timeToManeuverMod < timeToAN + 30 AND timeToManeuverMod > timeToAN - 30 {
 			SET nodeType TO "AN".
-		} ELSE IF timeToManeuver < timeToDN + 30 AND timeToManeuver > timeToDN - 30 {
+		} ELSE IF timeToManeuverMod < timeToDN + 30 AND timeToManeuverMod > timeToDN - 30 {
 			SET nodeType TO "DN".
 		} ELSE {
 			HUDTEXT("kOS: INCLINATION CHANGE MUST BE DONE AT EQUATORIAL NODE.", 30, 2, 20, RED, FALSE).
-			RETURN FALSE.
+			RETURN LEXICON("deltaV", 0, "orbits", 0, "period", 0).
 		}
 	}
 
 	// Determine the type of overWaypoint parameter provided
 	LOCAL long IS -1.
-	LOCAL lngMnv IS FALSE.
-	IF overWaypoint:ISTYPE("String") {
-		SET long TO WAYPOINT(overWaypoint):GEPOSITION:LNG.
+	LOCAL lngMnv IS LEXICON("deltaV", 0, "orbits", 0, "period", 0).
+	IF overWaypoint:ISTYPE("Waypoint") {
+		SET long TO overWaypoint:GEOPOSITION:LNG.
+	} ELSE IF overWaypoint:ISTYPE("String") {
+		SET long TO WAYPOINT(overWaypoint):GEOPOSITION:LNG.
 	} ELSE IF overWaypoint:ISTYPE("geoCoordinates") {
 		SET long TO overWaypoint:LNG.
 	} ELSE IF overWaypoint:ISTYPE("Scalar") {
@@ -360,7 +510,7 @@ FUNCTION CircularizationAt {
 
 	// Check whether we need to change the maneuver to arrive at a specific waypoint
 	IF long <> -1 {
-		LOCAL lngInitial IS MOD(BODY:GEOPOSITIONOF(mnvPos):LNG + 360*(BODY:ROTATIONPERIOD/timeToManeuver),360).
+		LOCAL lngInitial IS MOD(BODY:GEOPOSITIONOF(mnvPos):LNG - 360*(timeToManeuverMod/BODY:ROTATIONPERIOD),360).
 		SET lngMnv TO MoveToLongitudeDv(lngInitial, long, BODY:ALTITUDEOF(mnvPos), 500, "under").
 		SET desiredSpeed TO desiredSpeed + lngMnv["deltaV"].
 	}
@@ -389,10 +539,9 @@ FUNCTION CircularizationAt {
 
 	WAIT 0.
 	IF HASNODE {
-		IF lngMnv <> FALSE AND lngMNV:period <> 0 { RETURN lngMnv. }
-		RETURN TRUE.
+		IF lngMNV:deltaV <> 0 { RETURN lngMnv. }
 	}
-	RETURN FALSE.
+	IF lngMNV:deltaV <> 0 { RETURN lngMnv. }
 }
 
 // Creates a maneuver to match the orbital plane with your selected target
@@ -419,18 +568,21 @@ FUNCTION MatchInclinationWithTarget {
 	LOCAL timeToNode IS timeToAN.
 	LOCAL nodeType IS "AN".
 
-	// Select whether to do the maneuver at AN or DN
-	IF timeToAN < 60*4 {
-		SET timeToNode TO timeToDN.
-		SET nodeType TO "DN".
-	} ELSE IF timeToDN < timeToAN AND timeToDN > 60*4  {
-		SET timeToNode TO timeToDN.
-		SET nodeType TO "DN".
-	}
-
 	// Get position and velocity at the maneuver
 	LOCAL mnvPos IS POSITIONAT(SHIP, t+timeToNode).
 	LOCAL mnvVel IS VELOCITYAT(SHIP, t+timeToNode):ORBIT.
+
+	// Estimated maneuver time
+	LOCAL mnvTime IS BurnTime(SimplePlaneChangeDv(mnvVel, TARGET:OBT:INCLINATION, OBT:INCLINATION)).
+
+	// Select whether to do the maneuver at AN or DN
+	IF timeToAN < mnvTime + 60*2 {
+		SET timeToNode TO timeToDN.
+		SET nodeType TO "DN".
+	} ELSE IF timeToDN < timeToAN AND timeToDN > mnvTime + 60*2  {
+		SET timeToNode TO timeToDN.
+		SET nodeType TO "DN".
+	}
 
 	// Find axis of rotation of the velocity vector
 	LOCAL radialAtManeuver IS (mnvPos-BODY:POSITION):NORMALIZED.
@@ -465,8 +617,10 @@ FUNCTION NodeFromVector {
 
 // Execute the next node
 FUNCTION ExecNode {
-	PARAMETER RCSRequired, addKACAlarm IS TRUE.
+	PARAMETER RCSRequired, removeNode IS TRUE, addKACAlarm IS TRUE.
 	
+	SET SHIP:CONTROL:PILOTMAINTHROTTLE TO 0.
+
 	LOCAL kacAlarmAdvance IS 30.
 
 	LOCAL n IS NEXTNODE.
@@ -474,13 +628,29 @@ FUNCTION ExecNode {
 
 	LOCAL startTime IS TIME:SECONDS + n:ETA - BurnTime(v:MAG/2).
 
+	// This will create an alarm 30 seconds before the maneuver needs to begin
 	IF addKACAlarm AND ADDONS:AVAILABLE("KAC") {
-		ADDALARM("Raw", startTime - kacAlarmAdvance, "Maneuver Alarm", SHIP:NAME + " has a scheduled maneuver in " + kacAlarmAdvance + " seconds.").
+		IF n:ETA > 600 {
+			LOCAL attAlarm IS ADDALARM("Raw", startTime - 600, "Maneuver Alarm - Attitude Adjustment", SHIP:NAME + " has a scheduled maneuver in 10 minutes. Time to point at the Maneuver Node.").
+			SET attAlarm:ACTION TO "KillWarpOnly".
+			HUDTEXT("kOS: Timewarp can be used.", 10, 2, 20, GREEN, FALSE).
+		}
+		LOCAL mnvAlarm IS ADDALARM("Raw", startTime - kacAlarmAdvance, "Maneuver Alarm", SHIP:NAME + " has a scheduled maneuver in " + kacAlarmAdvance + " seconds.").
+		SET mnvAlarm:ACTION TO "KillWarpOnly".
 	}
 
-	LOCK STEERING TO v.
+	IF addKACAlarm { WAIT UNTIL TIME:SECONDS >= startTime - 600. }
+
+	SAS OFF.
+	LOCK STEERING TO LOOKDIRUP(v, SHIP:FACING:TOPVECTOR).
+	SET steeringLocked TO TRUE.
 	IF RCSRequired { RCS ON. }
-	WAIT UNTIL VANG(SHIP:FACING:VECTOR, v) < 0.1 AND (SHIP:ANGULARVEL:MAG < 0.01).
+	UNTIL VANG(SHIP:FACING:VECTOR, v) < 0.1 AND (SHIP:ANGULARVEL:MAG < 0.01) {
+		HUDTEXT("kOS: Pointing at the Maneuver Node.", 1, 2, 20, RED, FALSE).
+		HUDTEXT("kOS: V Ang Error - " + ROUND(VANG(SHIP:FACING:VECTOR, v),3) + " vs 0.1.", 1, 1, 20, RED, FALSE).
+		HUDTEXT("kOS: V Vel Error - " + ROUND(SHIP:ANGULARVEL:MAG,3) + " vs 0.01.", 1, 1, 20, RED, FALSE).
+		WAIT 1.
+	}
 	WAIT 5.
 	HUDTEXT("kOS: Pointing at the Maneuver. Timewarp can be used.", 10, 2, 20, GREEN, FALSE).
 
@@ -489,10 +659,23 @@ FUNCTION ExecNode {
 	WAIT UNTIL TIME:SECONDS >= startTime.
 	SET SHIP:CONTROL:FORE TO 0.
 	LOCK THROTTLE TO MAX(MIN(BurnTime(n:BURNVECTOR:MAG)/2, 1),0.05).
-	WAIT UNTIL VDOT(n:BURNVECTOR, v) < 0.
+	LOCAL originalEpsilons IS LIST(STEERINGMANAGER:TORQUEEPSILONMIN, STEERINGMANAGER:TORQUEEPSILONMAX).
+	SET STEERINGMANAGER:TORQUEEPSILONMAX TO 0.
+	UNTIL VDOT(n:BURNVECTOR, v) < 0 {
+		IF KUNIVERSE:TIMEWARP:WARP <> 0 AND KUNIVERSE:TIMEWARP:MODE = "RAILS" AND steeringLocked {
+			SET steeringLocked TO FALSE.
+			UNLOCK STEERING.
+		} ELSE IF (KUNIVERSE:TIMEWARP:MODE <> "RAILS" OR KUNIVERSE:TIMEWARP:WARP = 0) AND NOT steeringLocked {
+			SET steeringLocked TO TRUE.
+			LOCK STEERING TO LOOKDIRUP(v, SHIP:FACING:TOPVECTOR).
+		}
+	}
 	LOCK THROTTLE TO 0.
+	SET STEERINGMANAGER:TORQUEEPSILONMIN TO originalEpsilons[0].
+	SET STEERINGMANAGER:TORQUEEPSILONMAX TO originalEpsilons[1].
 	UNLOCK STEERING.
 	RCS OFF.
+	IF removeNode { REMOVE n. }
 }
 
 // Execute the next node but use MechJeb for attitude control.
@@ -513,8 +696,10 @@ FUNCTION ExecNodeMJ {
 	}
 	
 	IF RCSRequired { RCS ON. }
-	UNTIL VANG(SHIP:FACING:VECTOR, v) < 0.1 AND (SHIP:ANGULARVEL:MAG < 0.01) {
+	UNTIL VANG(SHIP:FACING:VECTOR, v) < 0.1 AND (SHIP:ANGULARVEL:MAG < 0.05) {
 		HUDTEXT("kOS: Use MechJeb to point at the Maneuver Node.", 1, 2, 20, RED, FALSE).
+		HUDTEXT("kOS: V Ang Error - " + ROUND(VANG(SHIP:FACING:VECTOR, v),3) + " vs 0.1.", 1, 2, 20, RED, FALSE).
+		HUDTEXT("kOS: V Vel Error - " + ROUND(SHIP:ANGULARVEL:MAG,3) + " vs 0.05.", 1, 2, 20, RED, FALSE).
 		WAIT 1.
 	}
 	WAIT 5.

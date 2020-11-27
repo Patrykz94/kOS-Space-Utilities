@@ -1,3 +1,5 @@
+@LAZYGLOBAL OFF.
+
 // Gravity acceleration
 FUNCTION Gravity {
 	PARAMETER a IS SHIP:ALTITUDE.
@@ -256,13 +258,49 @@ FUNCTION TA_RelativeDN {
 	RETURN NodeTrueAnomaly.
 }
 
+// Converts our targets True Anomaly to our ships True Anomaly.
+// Useful for rendezvous with a target etc.
+FUNCTION TA_TargetToShip {
+	PARAMETER trueAnomaly.
+	// Make sure a target has been selected
+	IF NOT HASTARGET { RETURN 0. }
+	// Make sure that the target is either a vessel or a body
+	IF NOT TARGET:ISTYPE("Vessel") AND NOT TARGET:ISTYPE("Body") { RETURN 0. }
+	// Make sure that your target is orbiting the same body as your ship
+	IF NOT TARGET:HASBODY OR TARGET:BODY <> SHIP:BODY { RETURN 0. }
+
+	// Calculate time it will take your target to get to a true anomaly first
+	LOCAL tgtEtaToTrueAnomaly IS TimeToTrueAnomaly(trueAnomaly, TARGET).
+	// Now get the position of our target at it's true anomaly
+	LOCAL tgtPosition IS POSITIONAT(TARGET, TIME:SECONDS+tgtEtaToTrueAnomaly).
+
+	// Vector from center of the body to the Targets true anomaly
+	LOCAL tgtTAVec IS tgtPosition - BODY:POSITION.
+	// Vector from center of the body to our Periapsis
+	LOCAL PEVec IS POSITIONAT(SHIP, TIME:SECONDS+ETA:PERIAPSIS) - BODY:POSITION.
+	// Absolute angle between the two vectors
+	LOCAL tgtTATrueAnomaly IS VANG(tgtTAVec, PEVec).
+	// Check whether the Targets true anomaly is in front of our periapsis or behind it
+	IF VANG(VCRS(tgtTAVec, PEVec), VCRS(SHIP:POSITION-BODY:POSITION, SHIP:VELOCITY:ORBIT)) < 1 {
+		SET tgtTATrueAnomaly TO 360-tgtTATrueAnomaly.
+	}
+
+	RETURN tgtTATrueAnomaly.
+}
+
+// True Anomaly of our Targets Periapsis along our orbit
+FUNCTION TA_TargetPE { RETURN TA_TargetToShip(0). }
+
+// True Anomaly of our Targets Apoapsis along our orbit
+FUNCTION TA_TargetAP { RETURN TA_TargetToShip(180). }
+
 // Time to the specified true anomaly.
 // You need to specify the true anomaly that you need to find
 FUNCTION TimeToTrueAnomaly {
-	PARAMETER trueAnomaly.
+	PARAMETER trueAnomaly, ves IS SHIP.
 
 	// Current Mean anomaly of the ship
-	LOCAL ShipMeanAnomaly IS TrueToMean().
+	LOCAL ShipMeanAnomaly IS TrueToMean(ves:OBT:TRUEANOMALY, ves:OBT:ECCENTRICITY).
 	// Target mean anomaly
 	LOCAL targetMean IS TrueToMean(trueAnomaly).
 
@@ -270,9 +308,111 @@ FUNCTION TimeToTrueAnomaly {
 	IF targetMean <= ShipMeanAnomaly { SET targetMean TO targetMean + 360. }
 
 	// Calculate Mean Motion
-	LOCAL n IS 2*CONSTANT:PI/OBT:PERIOD.
+	LOCAL n IS 2*CONSTANT:PI/ves:OBT:PERIOD.
 	// Return the time to realative node
 	RETURN (CONSTANT:DegToRad*(targetMean - ShipMeanAnomaly))/n.
+}
+
+// This function uses hill climbing method to find the closest approach with our target
+FUNCTION GetClosestApproach {
+	// Make sure a target has been selected
+	IF NOT HASTARGET { RETURN 0. }
+	// Make sure that the target is either a vessel or a body
+	IF NOT TARGET:ISTYPE("Vessel") { RETURN 0. }
+	// Make sure that your target is orbiting the same body as your ship
+	IF NOT TARGET:HASBODY OR TARGET:BODY <> SHIP:BODY { RETURN 0. }
+
+	// By how much do we need to step each time we run the calculations
+	// The steps sizes are 10, 1, 0.1 and 0.01. This should give us enough precision
+	LOCAL stepSize IS 10.
+
+	// Track the best result (we will calculate the final time from eta to targets TA)
+	LOCAL closestApproachTA IS 0.
+	LOCAL closestApproachDist IS SeparationFromTargetAt(TIME:SECONDS+TimeToTrueAnomaly(TA_TargetToShip(closestApproachTA)), TIME:SECONDS+TimeToTrueAnomaly(closestApproachTA, TARGET)).
+
+	// Function that contains the loop which compares closest approach distances along the orbit
+	FUNCTION FindClosestApproach {
+		UNTIL FALSE {
+			LOCAL positiveStepTA IS MOD(closestApproachTA+stepSize,360).
+			LOCAL negativeStepTA IS MOD(360+closestApproachTA-stepSize,360).
+			// Calculate the distance after a positive step change and after a negative step change
+			LOCAL positiveStepDist IS SeparationFromTargetAt(TIME:SECONDS+TimeToTrueAnomaly(TA_TargetToShip(positiveStepTA)), TIME:SECONDS+TimeToTrueAnomaly(positiveStepTA, TARGET)).
+			LOCAL negativeStepDist IS SeparationFromTargetAt(TIME:SECONDS+TimeToTrueAnomaly(TA_TargetToShip(negativeStepTA)), TIME:SECONDS+TimeToTrueAnomaly(negativeStepTA, TARGET)).
+
+			// Compare the distances after steps with the previous best distance
+			IF positiveStepDist < closestApproachDist {
+				SET closestApproachTA TO positiveStepTA.
+				SET closestApproachDist TO positiveStepDist.
+			} ELSE IF negativeStepDist < closestApproachDist {
+				SET closestApproachTA TO negativeStepTA.
+				SET closestApproachDist TO negativeStepDist.
+			} ELSE {
+				// If neither step brought us closer then we know that with this step size we got to the closest point
+				BREAK.
+			}
+		}
+	}
+
+	FindClosestApproach().
+	SET stepSize TO 1.
+	FindClosestApproach().
+	SET stepSize TO 0.1.
+	FindClosestApproach().
+	SET stepSize TO 0.01.
+	FindClosestApproach().
+	SET stepSize TO 0.001.
+	FindClosestApproach().
+
+	LOCAL shipEta IS TimeToTrueAnomaly(TA_TargetToShip(closestApproachTA)).
+	LOCAL targetEta IS TimeToTrueAnomaly(closestApproachTA, TARGET).
+
+	LOCAL results IS LEXICON(
+		"ETA", shipEta,
+		"targetETA", targetEta,
+		"dist", closestApproachDist,
+		"targetTA", closestApproachTA,
+		"shipTA", TA_TargetToShip(closestApproachTA),
+		"relSpeed", RelativeVelocityToTargetAt(shipEta)
+	).
+
+	RETURN results.
+}
+
+// This function tels us what's the absolute distance between us and the target at specified time
+// Can be called with just one time parameter (will return distance at the set time)
+// Can also be called with two time parameters (will return distance between positions at two different points in time)
+// Note that it requires actual time, NOT an ETA
+FUNCTION SeparationFromTargetAt {
+	PARAMETER t1 IS TIME:SECONDS, t2 IS -1.
+	// Make sure a target has been selected
+	IF NOT HASTARGET { RETURN 0. }
+	// Make sure that the target is either a vessel or a body
+	IF NOT TARGET:ISTYPE("Vessel") { RETURN 0. }
+	// Make sure that your target is orbiting the same body as your ship
+	IF NOT TARGET:HASBODY OR TARGET:BODY <> SHIP:BODY { RETURN 0. }
+
+	// If user hasn't manually specified a second time, use first time for both ship and target
+	IF t2 = -1 { SET t2 TO t1. }
+
+	LOCAL shipPos IS POSITIONAT(SHIP, t1).
+	LOCAL targetPos IS POSITIONAT(TARGET, t2).
+	RETURN (shipPos-targetPos):MAG.
+}
+
+// This function tels us what's the absolute relative velocity between us and the target at specified time
+// Note that it requires actual time, NOT an ETA
+FUNCTION RelativeVelocityToTargetAt {
+	PARAMETER t IS TIME:SECONDS.
+	// Make sure a target has been selected
+	IF NOT HASTARGET { RETURN 0. }
+	// Make sure that the target is either a vessel or a body
+	IF NOT TARGET:ISTYPE("Vessel") { RETURN 0. }
+	// Make sure that your target is orbiting the same body as your ship
+	IF NOT TARGET:HASBODY OR TARGET:BODY <> SHIP:BODY { RETURN 0. }
+
+	LOCAL shipVel IS VELOCITYAT(SHIP, t):ORBIT.
+	LOCAL targetVel IS VELOCITYAT(TARGET, t):ORBIT.
+	RETURN (shipVel-targetVel):MAG.
 }
 
 // Calculate the altitude of a stationary orbit
