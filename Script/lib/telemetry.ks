@@ -41,6 +41,61 @@ FUNCTION TimeToAltitude {
 	RETURN (-VERTICALSPEED - SQRT( (VERTICALSPEED*VERTICALSPEED)-(2 * (-Gravity(currentAltitude)) * (currentAltitude - desiredAltitude))) ) /  ((-Gravity(currentAltitude))).
 }
 
+// Use hill-climbing algorithm to find the closest time when spacecrafts altitude will cross the provided value
+// You should provide an optional timestamp value, otherwise current time will be used
+// When you want to circularize at a certain altitude in a few orbits time, pass an estimated time in to get the precise time
+// WARNING: If the altitude specified is very close to either Apoapsis or Periapsis then this function may not always return
+// time to the nearest pass through that altitude. If this is a problem, please reduce the step sizes
+FUNCTION TimeAtOrbitAltitude {
+	PARAMETER desiredAltitude, startTime IS TIME:SECONDS.
+
+	// If desired altitude is above apoapsis or below periapsis, return the closest values instead
+	IF desiredAltitude >= SHIP:APOAPSIS { RETURN TIME:SECONDS + ETA:APOAPSIS. }
+	ELSE IF desiredAltitude <= SHIP:PERIAPSIS { RETURN TIME:SECONDS + ETA:PERIAPSIS. }
+
+	// The step size in seconds
+	LOCAL stepSize IS 10.
+
+	// Track the best result
+	LOCAL closestTime IS startTime.
+	LOCAL closestTimeAltDiff IS ABS(desiredAltitude - BODY:ALTITUDEOF(POSITIONAT(SHIP, closestTime))).
+
+	// Function that contains the loop which looks for specified altitude along the orbit
+	FUNCTION FindTimeToAltitude {
+		UNTIL FALSE {
+			LOCAL positiveStepTime IS closestTime+stepSize.
+			LOCAL negativeStepTime IS closestTime-stepSize.
+			// Calculate the altitude after a positive step change and after a negative step change
+			LOCAL positiveStepDiff IS ABS(desiredAltitude - BODY:ALTITUDEOF(POSITIONAT(SHIP, positiveStepTime))).
+			LOCAL negativeStepDiff IS ABS(desiredAltitude - BODY:ALTITUDEOF(POSITIONAT(SHIP, negativeStepTime))).
+
+			// Compare the altitude differences after steps with the previous best results
+			IF positiveStepDiff < closestTimeAltDiff {
+				SET closestTime TO positiveStepTime.
+				SET closestTimeAltDiff TO positiveStepDiff.
+			} ELSE IF negativeStepDiff < closestTimeAltDiff {
+				SET closestTime TO negativeStepTime.
+				SET closestTimeAltDiff TO negativeStepDiff.
+			} ELSE {
+				// If neither step brought us closer then we know that with this step size we got to the closest point
+				BREAK.
+			}
+		}
+	}
+	FindTimeToAltitude().
+	SET stepSize TO 1.
+	FindTimeToAltitude().
+	SET stepSize TO 0.1.
+	FindTimeToAltitude().
+
+	// Make sure that the time is in the future
+	IF closestTime < TIME:SECONDS {
+		RETURN TimeAtOrbitAltitude(desiredAltitude, closestTime + OBT:PERIOD).
+	}
+
+	RETURN closestTime.
+}
+
 // Calculates the vessels distance from the body (Radius) at the point specified by true anomaly
 FUNCTION OrbitalRadius {
 	PARAMETER trueAnomaly IS OBT:TRUEANOMALY, semiMajaorAxis IS OBT:SEMIMAJORAXIS, ecc IS OBT:ECCENTRICITY.
