@@ -163,50 +163,88 @@ FUNCTION Dock_RequestDocking {
 // Function that actually docks to the target docking port
 FUNCTION Dock_DockTo {
 	PARAMETER targetDockingPort, myDockingPort, safeDist IS 250.
+	RCS ON. SAS OFF.
+
+	// Make sure the safe distance is at least 50
+	SET safeDist TO MAX(50, safeDist).
+
+	// Create some variables that will be required during the docking
+	LOCAL LOCK relativeVelocity TO SHIP:VELOCITY:ORBIT - targetDockingPort:SHIP:VELOCITY:ORBIT.
 
 	// First check to make sure that we are outside the safe zone
 	// If not then move outside and then continue with the script
+	UNTIL targetDockingPort:SHIP:DISTANCE < safeDist {
+		Translate(-targetDockingPort:SHIP:POSITION:NORMALIZED * 5 - relativeVelocity).
+		WAIT 0.
+	}
+
+	// Kill our relative velocity
+	UNTIL relativeVelocity:MAG < 0.1 {
+		Translate(V(0,0,0) - relativeVelocity).
+		WAIT 0.
+	}
+	Translate(V(0,0,0)).
 
 	LOCAL shipAngle IS VANG(-targetDockingPort:SHIP:POSITION, targetDockingPort:NODEPOSITION - targetDockingPort:SHIP:POSITION + targetDockingPort:PORTFACING:FOREVECTOR * safeDist).
 	LOCAL stationAxis IS VCRS(-targetDockingPort:SHIP:POSITION, targetDockingPort:NODEPOSITION - targetDockingPort:SHIP:POSITION + targetDockingPort:PORTFACING:FOREVECTOR * safeDist).
 
-	LOCAL totalWaypoints IS 2.
+	LOCAL additionalWaypoints IS 0.
 
-	IF shipAngle > 120 { SET totalWaypoints TO 4. }
-	ELSE IF shipAngle > 90 { SET totalWaypoints TO 3. }
+	IF shipAngle > 120 { SET additionalWaypoints TO 2. }
+	ELSE IF shipAngle > 90 { SET additionalWaypoints TO 1. }
 
 	LOCAL waypointStack IS STACK().
 
-	waypointStack:ADD(0).
-	waypointStack:ADD(0).
+	waypointStack:PUSH(LEXICON("angle", 0, "distance", 5, "speed", 0.25, "stop", FALSE)).
+	waypointStack:PUSH(LEXICON("angle", 0, "distance", 25, "speed", 0.5, "stop", TRUE)).
+	waypointStack:PUSH(LEXICON("angle", 0, "distance", 50, "speed", 1, "stop", FALSE)).
+	waypointStack:PUSH(LEXICON("angle", 0, "distance", safeDist, "speed", 5, "stop", TRUE)).
 
-	IF totalWaypoints = 3 { 
-		waypointStack:ADD(shipAngle/2).
-	} ELSE IF totalWaypoints = 4 {
-		waypointStack:ADD(shipAngle/3).
-		waypointStack:ADD((shipAngle/3) * 2).
+	IF additionalWaypoints = 1 {
+		waypointStack:PUSH(LEXICON("angle", shipAngle/2, "distance", safeDist, "speed", 5, "stop", FALSE)).
+	} ELSE IF additionalWaypoints = 2 {
+		waypointStack:PUSH(LEXICON("angle", shipAngle/3, "distance", safeDist, "speed", 5, "stop", FALSE)).
+		waypointStack:PUSH(LEXICON("angle", (shipAngle/3) * 2, "distance", safeDist, "speed", 5, "stop", FALSE)).
 	}
 
 	// Make sure to set control from to our docking port
+	myDockingPort:CONTROLFROM().
 
-	LOCAL nextWaypointAngle IS 0.
+	LOCAL nextWaypointData IS waypointStack:POP().
 	LOCAL nextWaypoint IS V(0,0,0).
 
 	LOCAL done IS FALSE.
-	LOCAL steer IS PROGRADE.
+	LOCAL steer IS LOOKDIRUP(SHIP:FACING:FOREVECTOR, SHIP:FACING:TOPVECTOR).
 	LOCK STEERING TO steer.
 
 	UNTIL done {
-		IF totalWaypoints > 2 AND waypointStack:LENGTH > 2 {
-			SET nextWaypoint TO targetDockingPort:SHIP:POSITION + Rodrigues(targetDockingPort:PORTFACING:FOREVECTOR, stationAxis, nextWaypointAngle) * safeDist.
-		} ELSE IF waypointStack:LENGTH > 0 {
-			SET nextWaypoint TO -myDockingPort:NODEPOSITION + targetDockingPort:NODEPOSITION + Rodrigues(targetDockingPort:PORTFACING:FOREVECTOR, stationAxis, nextWaypointAngle) * safeDist.
+		IF waypointStack:LENGTH >= 3 {
+			SET nextWaypoint TO targetDockingPort:SHIP:POSITION + Rodrigues(targetDockingPort:PORTFACING:FOREVECTOR * nextWaypointData["distance"], stationAxis, nextWaypointData["angle"]).
 		} ELSE {
-			SET nextWaypoint TO -myDockingPort:NODEPOSITION + targetDockingPort:NODEPOSITION + Rodrigues(targetDockingPort:PORTFACING:FOREVECTOR, stationAxis, nextWaypointAngle) * 25.
+			SET nextWaypoint TO -myDockingPort:NODEPOSITION + targetDockingPort:NODEPOSITION + Rodrigues(targetDockingPort:PORTFACING:FOREVECTOR * nextWaypointData["distance"], stationAxis, nextWaypointData["angle"]).
 		}
 
-		IF nextWaypoint:MAG > 10 {
+		IF nextWaypoint:MAG > 5 {
 			SET steer TO LOOKDIRUP(nextWaypoint, SHIP:FACING:TOPVECTOR).
+		} ELSE IF waypointStack:LENGTH <= 3 {
+			SET steer TO LOOKDIRUP(-targetDockingPort:PORTFACING:FOREVECTOR, targetDockingPort:PORTFACING:TOPVECTOR).
 		}
+
+		Translate(-targetDockingPort:SHIP:POSITION:NORMALIZED * 5 - relativeVelocity).
+
+		WAIT 0.
 	}
+}
+
+// A function that will handle translation in space
+FUNCTION Translate {
+	PARAMETER vector.
+	// Experimenting with either having a vector of lenght of 1 or 0.75
+	// Will need to test how translation and rotation play with each other
+	IF vector:MAG > 1 SET vector TO vector:NORMALIZED.
+	//IF vector:MAG > 0.75 SET vector TO vector:NORMALIZED * 0.75.
+
+	SET SHIP:CONTROL:FORE TO vector * SHIP:FACING:FOREVECTOR.
+	SET SHIP:CONTROL:TOP TO vector * SHIP:FACING:TOPVECTOR.
+	SET SHIP:CONTROL:STARBOARD TO vector * SHIP:FACING:STARVECTOR.
 }
