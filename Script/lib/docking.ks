@@ -171,15 +171,21 @@ FUNCTION Dock_DockTo {
 	// Create some variables that will be required during the docking
 	LOCAL LOCK relativeVelocity TO SHIP:VELOCITY:ORBIT - targetDockingPort:SHIP:VELOCITY:ORBIT.
 
+	// For now, just cancel any rotation and hold the current attitude
+	LOCAL steer IS LOOKDIRUP(SHIP:FACING:FOREVECTOR, SHIP:FACING:TOPVECTOR).
+	LOCK STEERING TO steer.
+
 	// First check to make sure that we are outside the safe zone
 	// If not then move outside and then continue with the script
 	UNTIL targetDockingPort:SHIP:DISTANCE > safeDist {
+		SET steer TO LOOKDIRUP(SHIP:FACING:FOREVECTOR, SHIP:FACING:TOPVECTOR).
 		Translate(-targetDockingPort:SHIP:POSITION:NORMALIZED * 5 - relativeVelocity).
 		WAIT 0.
 	}
 
 	// Kill our relative velocity
 	UNTIL relativeVelocity:MAG < 0.1 {
+		SET steer TO LOOKDIRUP(SHIP:FACING:FOREVECTOR, SHIP:FACING:TOPVECTOR).
 		Translate(V(0,0,0) - relativeVelocity).
 		WAIT 0.
 	}
@@ -216,10 +222,9 @@ FUNCTION Dock_DockTo {
 
 	LOCAL done IS FALSE.
 	LOCAL stopAtPosition IS TRUE.
-	LOCAL aimAtPort IS FALSE.
+	LOCAL stabilizeFacing IS FALSE.
 	LOCAL canProceed IS FALSE.
-	LOCAL steer IS LOOKDIRUP(SHIP:FACING:FOREVECTOR, SHIP:FACING:TOPVECTOR).
-	LOCK STEERING TO steer.
+	LOCAL desiredVelocity IS V(0,0,0).
 
 	UNTIL done {
 		IF nextWaypointData["angle"] <> 0 {
@@ -228,10 +233,10 @@ FUNCTION Dock_DockTo {
 			SET nextWaypoint TO -myDockingPort:NODEPOSITION + targetDockingPort:NODEPOSITION + targetDockingPort:PORTFACING:FOREVECTOR * nextWaypointData["distance"].
 		}
 
-		IF aimAtPort {
+		IF stabilizeFacing {
 			SET steer TO LOOKDIRUP(-targetDockingPort:PORTFACING:FOREVECTOR, targetDockingPort:PORTFACING:TOPVECTOR).
-		} ELSE IF nextWaypoint:MAG + 0.5 > relativeVelocity:MAG * 2 {
-			SET steer TO LOOKDIRUP(nextWaypoint, SHIP:FACING:TOPVECTOR).
+		} ELSE {
+			SET steer TO LOOKDIRUP(targetDockingPort:NODEPOSITION, targetDockingPort:PORTFACING:TOPVECTOR).
 		}
 
 		IF nextWaypoint:MAG < 0.1 AND relativeVelocity < 0.1 {
@@ -251,7 +256,7 @@ FUNCTION Dock_DockTo {
 			Translate(V(0,0,0)).
 			SET canProceed TO FALSE.
 			// IF the port that we arrived at now has an angle of 0, start aiming at the docking port
-			IF nextWaypointData["angle"] = 0 { SET aimAtPort TO TRUE. }
+			IF nextWaypointData["angle"] = 0 { SET stabilizeFacing TO TRUE. }
 
 			IF waypointStack:LENGTH > 0 {
 				SET nextWaypointData TO waypointStack:POP().
@@ -260,7 +265,8 @@ FUNCTION Dock_DockTo {
 				SET done TO TRUE.
 			}
 		} ELSE {
-			Translate(-targetDockingPort:SHIP:POSITION:NORMALIZED * 5 - relativeVelocity).
+			SET desiredVelocity TO CHOOSE nextWaypoint IF nextWaypoint:MAG <= nextWaypointData["speed"] ELSE nextWaypoint:NORMALIZED * nextWaypointData["speed"].
+			Translate(desiredVelocity - relativeVelocity).
 		}
 
 		// If our docking ports are atached or about to be attached, break out of the loop and unlock everything
