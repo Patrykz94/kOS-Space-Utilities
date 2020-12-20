@@ -158,6 +158,7 @@ FUNCTION Dock_RequestDocking {
 	}
 
 	// If we got to this point, call the actuall docking function with the information we received
+	Dock_DockTo(targetPort, myPort, response:CONTENT["safeDist"]).
 }
 
 // Function that actually docks to the target docking port
@@ -280,6 +281,107 @@ FUNCTION Dock_DockTo {
 	
 	Translate(V(0,0,0)).
 	UNLOCK ALL.
+}
+
+// A function that undocks the spacecraft and moves it away from the other vessel ready for de-orbiting
+FUNCTION Dock_Undock {
+	PARAMETER moveOff IS FALSE.
+	LOCAL moveAwayDist IS 50.
+
+	// Get a list of all docking ports on our ship/element
+	LOCAL allPorts IS CORE:ELEMENT:DOCKINGPORTS.
+	LOCAL ourPort IS FALSE.
+	LOCAL otherPort IS FALSE.
+	// For now, we undock the first docked port that we find on our element.
+	// This should be updated later as it may not always be the correct port
+	FOR port IN allPorts {
+		IF port:HASPARTNER {
+			SET otherPort TO port:PARTNER.
+			SET ourPort TO port.
+		}
+	}
+	// Make sure that we located the relevant docking ports
+	IF ourPort:ISTYPE("bool") OR otherPort:ISTYPE("bool") {
+		HUDTEXT("Undocking failed", 10, 2, 20, RED, FALSE).
+		RETURN FALSE.
+	}
+	// Set the docking port to be the control part of the spacecraft for now
+	ourPort:CONTROLFROM().
+	WAIT 0.
+	ourPort:UNDOCK().
+	WAIT 0.
+	SAS OFF.
+	RCS ON.
+
+	LOCK STEERING TO LOOKDIRUP(-otherPort:FACING:VECTOR, SHIP:FACING:TOPVECTOR).
+	LOCAL LOCK dist TO (otherPort:NODEPOSITION - ourPort:NODEPOSITION):MAG.
+	LOCAL LOCK relativeVelocity TO SHIP:VELOCITY:ORBIT - otherPort:SHIP:VELOCITY:ORBIT.
+	
+	UNTIL dist > 2 { Translate(otherPort:FACING:VECTOR*0.25 - relativeVelocity). }
+	UNTIL dist > moveAwayDist { Translate(otherPort:FACING:VECTOR*2 - relativeVelocity). }
+
+	// If we are maneuvering away from the station, execute code below
+	IF moveOff {
+		// Kill our relative velocity
+		LOCK STEERING TO LOOKDIRUP(SHIP:FACING:FOREVECTOR, SHIP:FACING:TOPVECTOR).
+		UNTIL relativeVelocity:MAG < 0.1 {
+			Translate(V(0,0,0) - relativeVelocity).
+			WAIT 0.
+		}
+		Translate(V(0,0,0)).
+
+		// Possible directions
+		LOCAL LOCK pro TO SHIP:VELOCITY:ORBIT:NORMALIZED + BODY:POSITION:NORMALIZED.
+		LOCAL LOCK retro TO -SHIP:VELOCITY:ORBIT:NORMALIZED + BODY:POSITION:NORMALIZED.
+		LOCAL LOCK proFlat TO SHIP:VELOCITY:ORBIT:NORMALIZED.
+		LOCAL LOCK retroFlat TO -SHIP:VELOCITY:ORBIT:NORMALIZED.
+
+		// Decide whether to move away in prograde or retrograde direction
+		IF VANG(pro, otherPort) > VANG(retro, otherPort) {
+			IF SHIP:ALTITUDE > otherPort:SHIP:ALTITUDE {
+				LOCK STEERING TO LOOKDIRUP(proFlat, SHIP:FACING:TOPVECTOR).
+				WAIT UNTIL VANG(SHIP:FACING:FOREVECTOR, proFlat) < 0.1. WAIT 2.
+				UNTIL dist > 150 {
+					Translate(proFlat*5 - relativeVelocity).
+					WAIT 0.
+				}
+				Translate(V(0,0,0)).
+			}
+			LOCK STEERING TO LOOKDIRUP(pro, SHIP:FACING:TOPVECTOR).
+			WAIT UNTIL VANG(SHIP:FACING:FOREVECTOR, pro) < 0.1. WAIT 2.
+			UNTIL dist > 300 {
+				Translate(pro*5 - relativeVelocity).
+				WAIT 0.
+			}
+			Translate(V(0,0,0)).
+		} ELSE {
+			IF SHIP:ALTITUDE > otherPort:SHIP:ALTITUDE {
+				LOCK STEERING TO LOOKDIRUP(retroFlat, SHIP:FACING:TOPVECTOR).
+				WAIT UNTIL VANG(SHIP:FACING:FOREVECTOR, retroFlat) < 0.1. WAIT 2.
+				UNTIL dist > 150 {
+					Translate(retroFlat*5 - relativeVelocity).
+					WAIT 0.
+				}
+				Translate(V(0,0,0)).
+			}
+			LOCK STEERING TO LOOKDIRUP(retro, SHIP:FACING:TOPVECTOR).
+			WAIT UNTIL VANG(SHIP:FACING:FOREVECTOR, retro) < 0.1. WAIT 2.
+			UNTIL dist > 300 {
+				Translate(retro*5 - relativeVelocity).
+				WAIT 0.
+			}
+			Translate(V(0,0,0)).
+		}
+	}
+	
+	// Kill our relative velocity
+	LOCK STEERING TO LOOKDIRUP(SHIP:FACING:FOREVECTOR, SHIP:FACING:TOPVECTOR).
+	UNTIL relativeVelocity:MAG < 0.1 {
+		Translate(V(0,0,0) - relativeVelocity).
+		WAIT 0.
+	}
+	Translate(V(0,0,0)).
+	RETURN TRUE.
 }
 
 // A function that will handle translation in space
