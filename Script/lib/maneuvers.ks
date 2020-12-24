@@ -89,6 +89,42 @@ FUNCTION HohmanAndPlaneChangeDv {
 	RETURN LIST(dv1, dv2).
 }
 
+// Create a maneuver node for changing apoapsis
+FUNCTION ApoapsisChange {
+	PARAMETER desiredAp, mnvEta.
+
+	// Get the spacecrafts position vector at maneuver
+	LOCAL posAtMnv IS POSITIONAT(SHIP, TIME:SECONDS + mnvEta).
+	// Get the spacecrafts velocity vector at maneuver
+	LOCAL velAtMnv IS VELOCITYAT(SHIP, TIME:SECONDS + mnvEta):ORBIT.
+	// Get the spacecrafts altitude at maneuver. This will be the new orbits Periapsis
+	LOCAL altAtMnv IS BODY:ALTITUDEOF(posAtMnv).
+
+	// Calculate the Semi-Major Axis of the new orbit
+	LOCAL MNV_SMA IS (desiredAp + altAtMnv)/2 + BODY:RADIUS.
+	// Calculate the Eccentricity of the new orbit
+	LOCAL MNV_ECC IS OrbitalEccentricity(desiredAp, altAtMnv).
+
+	// Calculate the spacecrafts speed at the Periapsis of the new orbit
+	LOCAL MNV_SpeedAtPe IS OrbitalSpeed(OrbitalRadius(0, MNV_SMA, MNV_ECC), MNV_SMA).
+	// Calculate the prograde vector of the spacecraft at the Periapsis of the new orbit
+	LOCAL MNV_ProgradeAtPe IS VXCL(posAtMnv - BODY:POSITION, velAtMnv):NORMALIZED.
+	// Multiply the prograde vector by the speed to get the velocity vector at Periapsis of the new orbit
+	LOCAL MNV_VelocityAtPe IS MNV_ProgradeAtPe * MNV_SpeedAtPe.
+
+	// Calculate the required change in velocity for the maneuver
+	LOCAL MNV_ManeuverDeltaV IS MNV_VelocityAtPe - velAtMnv.
+
+	// Create the maneuver node
+	LOCAL maneuverNode IS NodeFromVector(MNV_ManeuverDeltaV, TIME:SECONDS + mnvEta).
+	// Add the maneuver node to the flight path
+	ADD maneuverNode.
+
+	WAIT 0.
+	IF HASNODE { RETURN TRUE. }
+	RETURN FALSE.
+}
+
 // Create a maneuver node for a Geostationary Transfer Orbit (GTO)
 FUNCTION GeostationaryTransferOrbit {
 
@@ -101,38 +137,57 @@ FUNCTION GeostationaryTransferOrbit {
 	LOCAL timeToEq IS MIN(timeToAN, timeToDN).
 
 	// Make sure that we have enough time to prepare for the maneuver. Otherwise, use next node instead
-	IF timeToEq < 60*4 { SET timeToEq TO MAX(timeToAN, timeToDN). }
+	IF timeToEq < 60*5 { SET timeToEq TO MAX(timeToAN, timeToDN). }
 
-	// Get the spacecrafts position vector at the equatorial node
-	LOCAL posAtEq IS POSITIONAT(SHIP, TIME:SECONDS + timeToEq).
-	// Get the spacecrafts velocity vector at the equatorial node
-	LOCAL velAtEq IS VELOCITYAT(SHIP, TIME:SECONDS + timeToEq):ORBIT.
-	// Get the spacecrafts altitude at the equatorial node. This will be the transfer orbits new Periapsis
-	LOCAL altAtEq IS BODY:ALTITUDEOF(posAtEq).
+	RETURN ApoapsisChange(desiredAp, timeToEq).
+}
 
-	// Calculate the Semi-Major Axis of the new transfer orbit
-	LOCAL GTO_SMA IS (desiredAp + altAtEq)/2 + BODY:RADIUS.
-	// Calculate the Eccentricity of the new transfer orbit
-	LOCAL GTO_ECC IS OrbitalEccentricity(desiredAp, altAtEq).
+// Create a maneuver node for a Molniya Orbit
+FUNCTION MolniyaOrbit {
+	PARAMETER ArgOfPe IS 270.
 
-	// Calculate the spacecrafts speed at the Periapsis of the new transfer orbit
-	LOCAL GTO_SpeedAtPe IS OrbitalSpeed(OrbitalRadius(0, GTO_SMA, GTO_ECC), GTO_SMA).
-	// Calculate the prograde vector of the spacecraft at the Periapsis of the new transfer orbit
-	LOCAL GTO_ProgradeAtPe IS VXCL(posAtEq - BODY:POSITION, velAtEq):NORMALIZED.
-	// Multiply the prograde vector by the speed to get the velocity vector at Periapsis of the new transfer orbit
-	LOCAL GTO_VelocityAtPe IS GTO_ProgradeAtPe * GTO_SpeedAtPe.
+	// Time to maneuver
+	LOCAL MNV_TA IS MOD(ArgOfPe - OBT:ARGUMENTOFPERIAPSIS + 360, 360).
+	LOCAL timeToMnv IS TimeToTrueAnomaly(MNV_TA).
+	IF timeToMnv < 60*5 { SET timeToMnv TO timeToMnv + OBT:PERIOD. }
 
-	// Calculate the required change in velocity for the maneuver
-	LOCAL GTO_ManeuverDeltaV IS GTO_VelocityAtPe - velAtEq.
+	// Calculate the desired orbital period. For Molniya orbit this should be half of the siderial day
+	LOCAL desiredPeriod IS BODY:ROTATIONPERIOD/2.
 
-	// Create the maneuver node
-	LOCAL maneuverNode IS NodeFromVector(GTO_ManeuverDeltaV, TIME:SECONDS + timeToEq).
-	// Add the maneuver node to the flight path
-	ADD maneuverNode.
+	// Get the spacecrafts position vector at maneuver
+	LOCAL posAtMnv IS POSITIONAT(SHIP, TIME:SECONDS + timeToMnv).
+	// Get the spacecrafts altitude at maneuver. This will be the new orbits Periapsis
+	LOCAL altAtMnv IS BODY:ALTITUDEOF(posAtMnv).
+	// Get the new orbits Semi-Major Axis
+	LOCAL MNV_SMA IS SMAWithPeriod(desiredPeriod).
+	// Calculate the diesired Apoapsis.
+	LOCAL desiredAp IS MNV_SMA * 2 - altAtMnv - BODY:RADIUS * 2.
 
-	WAIT 0.
-	IF HASNODE { RETURN TRUE. }
-	RETURN FALSE.
+	RETURN ApoapsisChange(desiredAp, timeToMnv).
+}
+
+// Create a maneuver node for a Tundra Orbit
+FUNCTION TundraOrbit {
+	PARAMETER ArgOfPe IS 270.
+
+	// Time to maneuver
+	LOCAL MNV_TA IS MOD(ArgOfPe - OBT:ARGUMENTOFPERIAPSIS + 360, 360).
+	LOCAL timeToMnv IS TimeToTrueAnomaly(MNV_TA).
+	IF timeToMnv < 60*5 { SET timeToMnv TO timeToMnv + OBT:PERIOD. }
+
+	// Calculate the desired orbital period. For Tundra orbit this should be half of the siderial day
+	LOCAL desiredPeriod IS BODY:ROTATIONPERIOD.
+
+	// Get the spacecrafts position vector at maneuver
+	LOCAL posAtMnv IS POSITIONAT(SHIP, TIME:SECONDS + timeToMnv).
+	// Get the spacecrafts altitude at maneuver. This will be the new orbits Periapsis
+	LOCAL altAtMnv IS BODY:ALTITUDEOF(posAtMnv).
+	// Get the new orbits Semi-Major Axis
+	LOCAL MNV_SMA IS SMAWithPeriod(desiredPeriod).
+	// Calculate the diesired Apoapsis.
+	LOCAL desiredAp IS MNV_SMA * 2 - altAtMnv - BODY:RADIUS * 2.
+
+	RETURN ApoapsisChange(desiredAp, timeToMnv).
 }
 
 // A function that will do a course correction using RCS to get the GTO Apoapsis precisely on target
