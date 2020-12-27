@@ -84,11 +84,12 @@ FUNCTION Land_Touchdown {
 	SET CONFIG:IPU TO originalIPU.
 }
 
-// Takes timestamp and position geocoordinates as arguments
-FUNCTION Land_GetGeopositionAt {
-	PARAMETER t, posCoordinates.
+// Takes geoposition and time
+// Returns original geoposition adjusted by how much the planet will have rotated by the specified time
+FUNCTION Land_GetFutureGeoposition {
+	PARAMETER posCoordinates, futureTime.
 
-	LOCAL longitudeOffset IS (t - TIME:SECONDS) / BODY:ROTATIONPERIOD * 360.
+	LOCAL longitudeOffset IS (futureTime - TIME:SECONDS) / BODY:ROTATIONPERIOD * 360.
 
 	RETURN LATLNG(posCoordinates:LAT, MOD(posCoordinates:LNG + longitudeOffset, 360)).
 }
@@ -245,4 +246,60 @@ FUNCTION Land_CalculateLandingBurn {
 	SET CONFIG:IPU TO originalIPU.
 	IF NOT returnLex:HASSUFFIX("TrajectoryFound") { returnLex:ADD("TrajectoryFound", FALSE). }
 	RETURN returnLex.
+}
+
+// A forward simulation that calculates the landing burn start time and burn vector
+// to bring the landing location as close to the target as possible. Assumes constant thrust
+FUNCTION Land_ForwardSim {
+	PARAMETER landingEngines, landerDryMass, desiredLocation IS "unspecified", desiredAltitude IS 500, desiredSpeed IS 25, initialTimeStep IS 5.
+
+	// Create the return lexicon with default values
+	LOCAL landingLex IS LEXICON("calculated", FALSE, "startTime", 0, "vAngle", 0, "hAngle", 0).
+
+	// Declare engine related variables
+	LOCAL engThrust IS 0. LOCAL engISP IS 0. LOCAL massFlow IS 0.
+
+	// Run through the engines to get our max thrust, mass flow and ISP values
+	FOR en IN landingEngines {
+		SET engThrust TO engThrust + en:POSSIBLETHRUSTAT(0) * 1000. // Newtons
+		SET massFlow TO massFlow + en:MAXMASSFLOW * 1000. // kg
+		SET engISP TO engISP + en:VISP.
+	}
+
+	SET engISP TO engISP/landingEngines:LENGTH.
+	
+	LOCAL startingMass IS SHIP:MASS * 1000. // kg
+	LOCAL maxDeltaV IS engISP * CONSTANT:g0 * LN(startingMass / landerDryMass).
+	LOCAL maxBurnTime IS (startingMass - landerDryMass) / massFlow.
+
+	// If our current velocity - desired velocity is more than our max deltav, we won't be able to land
+	// Currently the script assumes that the continuous burn will be done with a single stage
+	IF SHIP:VELOCITY:SURFACE:MAG - desiredSpeed > maxDeltaV { HUDTEXT("kOS: NOT ENOUGH DELTAV TO LAND!", 10, 2, 20, GREEN, FALSE). RETURN landingLex. }
+
+	FUNCTION RunCycle {
+		PARAMETER cycleStartTime, timeStep.
+
+		LOCAL newTim IS cycleStartTime.
+		LOCAL newVel IS VELOCITYAT(SHIP, newTim):SURFACE.
+		LOCAL newPos IS -BODY:POSITION + POSITIONAT(SHIP, newTim).
+		LOCAL newAlt IS BODY:ALTITUDEOF(newPos).
+		LOCAL newHei IS Land_GetGeopositionAt(newTim, BODY:GEOPOSITIONOF(newPos)):TERRAINHEIGHT.
+		LOCAL newMas IS startMass.
+		LOCAL newAcc IS v(0,0,0).
+		LOCAL newGra IS (BODY:POSITION - newPos):NORMALIZED * Gravity(newAlt).
+
+		UNTIL FALSE {
+			// update new vars
+			SET newTim TO newTim + timeStep.
+			SET newVel TO newVel + (newAcc * timeStep) + (newGra * timeStep).
+			SET newPos TO newPos + (newVel * timeStep).// + BODY:POSITION.
+			SET newAlt TO BODY:ALTITUDEOF(newPos + BODY:POSITION).
+			SET newHei TO Land_GetGeopositionAt(newTim, BODY:GEOPOSITIONOF(newPos)):TERRAINHEIGHT.
+			SET newMas TO newMas - (massFlow * timeStep).
+			SET newAcc TO Rodrigues(-newVel, VCRS(newVel, -newPos), angle):NORMALIZED * engThrust / newMas.
+			SET newGra TO (-newPos):NORMALIZED * Gravity(newAlt).
+		}
+
+		RETURN TRUE.
+	}
 }
