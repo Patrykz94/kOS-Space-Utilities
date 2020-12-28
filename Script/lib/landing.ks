@@ -251,7 +251,21 @@ FUNCTION Land_CalculateLandingBurn {
 // A forward simulation that calculates the landing burn start time and burn vector
 // to bring the landing location as close to the target as possible. Assumes constant thrust
 FUNCTION Land_ForwardSim {
-	PARAMETER landingEngines, landerDryMass, desiredLocation IS "unspecified", desiredAltitude IS 500, desiredSpeed IS 25, initialTimeStep IS 5.
+	PARAMETER landingEngines, landerDryMass, desiredLocation IS FALSE, desiredAltitude IS 500, desiredSpeed IS 25, initialTimeStep IS 5.
+
+	// Whether or not we should aim to land at a particular spot on the surface
+	LOCAL landOnTarget IS FALSE.
+
+	// If desiredLocation is either a waypoint or geocoordinates then we want to traget that location
+	IF desiredLocation:ISTYPE("Waypoint") {
+		SET desiredLocation TO desiredLocation:GEOPOSITION.
+		SET landOnTarget TO TRUE.
+	} ELSE IF desiredLocation:ISTYPE("geoCoordinates") {
+		SET landOnTarget TO TRUE.
+	}
+
+	// Add a maximum altitude that can be marked as good to end the burn at
+	LOCAL maxAltitude IS desiredAltitude + 250.
 
 	// Create the return lexicon with default values
 	LOCAL landingLex IS LEXICON("calculated", FALSE, "startTime", 0, "vAngle", 0, "hAngle", 0).
@@ -265,7 +279,6 @@ FUNCTION Land_ForwardSim {
 		SET massFlow TO massFlow + en:MAXMASSFLOW * 1000. // kg
 		SET engISP TO engISP + en:VISP.
 	}
-
 	SET engISP TO engISP/landingEngines:LENGTH.
 	
 	LOCAL startingMass IS SHIP:MASS * 1000. // kg
@@ -276,30 +289,124 @@ FUNCTION Land_ForwardSim {
 	// Currently the script assumes that the continuous burn will be done with a single stage
 	IF SHIP:VELOCITY:SURFACE:MAG - desiredSpeed > maxDeltaV { HUDTEXT("kOS: NOT ENOUGH DELTAV TO LAND!", 10, 2, 20, GREEN, FALSE). RETURN landingLex. }
 
-	FUNCTION RunCycle {
-		PARAMETER cycleStartTime, timeStep.
+	// Simulation failure reasons
+	LOCAL tooLow IS "tooLow".
+	LOCAL tooHight IS "tooHigh".
+	LOCAL outOfFuel IS "outOfFuel".
 
-		LOCAL newTim IS cycleStartTime.
-		LOCAL newVel IS VELOCITYAT(SHIP, newTim):SURFACE.
-		LOCAL newPos IS -BODY:POSITION + POSITIONAT(SHIP, newTim).
-		LOCAL newAlt IS BODY:ALTITUDEOF(newPos).
-		LOCAL newHei IS Land_GetGeopositionAt(newTim, BODY:GEOPOSITIONOF(newPos)):TERRAINHEIGHT.
-		LOCAL newMas IS startMass.
-		LOCAL newAcc IS v(0,0,0).
-		LOCAL newGra IS (BODY:POSITION - newPos):NORMALIZED * Gravity(newAlt).
+	// An internal function that calculates a full simulation cycle
+	FUNCTION RunCycle {
+		PARAMETER cycleStartTime, timeStep, vAngle IS 0, hAngle IS 0.
+
+		// Create a return lexicon
+		LOCAL returnLex IS LEXICON("complete", FALSE).
+
+		// Whether this trajectory gets us a correct altitude and velocity
+		// The simulation will then still continue to find the landing position
+		LOCAL altitudeVelocityMatch IS FALSE.
+
+		// Save the relevant altitude, velocity and position
+		LOCAL finalAltitude IS 0.
+		LOCAL finalVelocity IS 0.
+		LOCAL finalGeoposition IS SHIP:GEOPOSITION.
+
+		LOCAL simTime IS cycleStartTime.
+		LOCAL simVelocity IS VELOCITYAT(SHIP, simTime):SURFACE.
+		LOCAL simPosition IS -BODY:POSITION + POSITIONAT(SHIP, simTime).
+		LOCAL simAltitude IS BODY:ALTITUDEOF(simPosition).
+		LOCAL simGeoposition IS Land_GetFutureGeoposition(simTime, BODY:GEOPOSITIONOF(simPosition)).
+		LOCAL simTerrainHeight IS simGeoposition:TERRAINHEIGHT.
+		LOCAL simMass IS startingMass.
+		LOCAL simAcceleration IS v(0,0,0).
+		LOCAL simGravity IS (-simPosition):NORMALIZED * Gravity(simAltitude).
 
 		UNTIL FALSE {
-			// update new vars
-			SET newTim TO newTim + timeStep.
-			SET newVel TO newVel + (newAcc * timeStep) + (newGra * timeStep).
-			SET newPos TO newPos + (newVel * timeStep).// + BODY:POSITION.
-			SET newAlt TO BODY:ALTITUDEOF(newPos + BODY:POSITION).
-			SET newHei TO Land_GetGeopositionAt(newTim, BODY:GEOPOSITIONOF(newPos)):TERRAINHEIGHT.
-			SET newMas TO newMas - (massFlow * timeStep).
-			SET newAcc TO Rodrigues(-newVel, VCRS(newVel, -newPos), angle):NORMALIZED * engThrust / newMas.
-			SET newGra TO (-newPos):NORMALIZED * Gravity(newAlt).
+			// Update simulation vars
+			SET simTime TO simTime + timeStep.
+			SET simVelocity TO simVelocity + (simAcceleration * timeStep) + (simGravity * timeStep).
+			SET simPosition TO simPosition + (simVelocity * timeStep).
+			SET simAltitude TO BODY:ALTITUDEOF(simPosition + BODY:POSITION).
+			SET simGeoposition TO Land_GetFutureGeoposition(simTime, BODY:GEOPOSITIONOF(simPosition)).
+			SET simTerrainHeight TO simGeoposition:TERRAINHEIGHT.
+			IF altitudeVelocityMatch {
+				// If we found a matching altitude and velocity, then we continue the simulation at constant speed
+				// to find the estimated impact/landing location
+				SET simAcceleration TO -simVelocity:NORMALIZED * Gravity(simAltitude).
+			} ELSE {
+				SET simMass TO simMass - (massFlow * timeStep).
+				// Calculate acceleration from engine thrust
+				// Need to test whether rotating the vector changes it's magnitude by any meaningful amount
+				SET simAcceleration TO -simVelocity:NORMALIZED * engThrust / simMass.
+				// Rotate the acceleration vector to simulate pitch control
+				IF vAngle <> 0 {
+					SET simAcceleration TO Rodrigues(simAcceleration, VCRS(simVelocity, -simPosition), vAngle).
+				}
+				// Rotate the acceleration vector to simulate yaw control
+				IF hAngle <> 0 {
+					SET simAcceleration TO Rodrigues(simAcceleration, -simPosition, vAngle).
+				}
+			}
+			SET simGravity TO (-simPosition):NORMALIZED * Gravity(simAltitude).
+
+			// Test simulation parameters to see if we are done yet
+			IF altitudeVelocityMatch {
+				// If our altitude is below terrain height, we have had an impact/landing
+				IF simAltitude <= simTerrainHeight {
+					SET finalGeoposition TO simGeoposition.
+					BREAK.
+				}
+			} ELSE {
+				// Getting the magnitude of a vector is quite expensive so lets do it here once
+				LOCAL currentSpeed IS simVelocity:MAG.
+				LOCAl altitudeAGL IS simAltitude - simTerrainHeight.
+
+				// If our speed is ok but altitude too high OR speed too high and altitude too low, return giving the aproppraite reason
+				IF currentSpeed <= desiredSpeed AND altitudeAGL > maxAltitude {
+					returnLex:ADD("reason", tooHight).
+					returnLex:ADD("difference", altitudeAGL - desiredAltitude).
+					RETURN returnLex.
+				} ELSE IF currentSpeed > desiredSpeed AND altitudeAGL < desiredAltitude {
+					returnLex:ADD("reason", tooLow).
+					// Estimate at what altitude we would have slowed down enough
+					// Not perfectly accurate but good enough for what we're doing
+					LOCAL downwardAccleration IS simAcceleration * -simGravity - simGravity:MAG.
+					returnLex:ADD("difference", 0). //Complete this
+					RETURN returnLex.
+				}
+				// If our mass is less than dry mass, we have run out of fuel
+				IF simMass < landerDryMass {
+					returnLex:ADD("reason", outOfFuel).
+					RETURN returnLex.
+				}
+				// If the parameters look fine, note that the altitude and velocity match
+				IF currentSpeed <= desiredSpeed AND altitudeAGL >= desiredAltitude AND altitudeAGL <= maxAltitude {
+					SET altitudeVelocityMatch TO TRUE.
+					SET finalAltitude TO altitudeAGL.
+					SET finalVelocity TO currentSpeed.
+				}
+			}
 		}
 
-		RETURN TRUE.
+		// At this point the simulation has completed
+		SET returnLex:complete TO TRUE.
+		returnLex:ADD("altitude", finalAltitude).
+		returnLex:ADD("velocity", finalVelocity).
+		returnLex:ADD("position", finalGeoposition).
+		RETURN returnLex.
+	}
+
+	// Simulation config variables
+	LOCAL simStartTime IS TIME:SECONDS.
+	LOCAL cycleStartTime IS simStartTime + 30.
+	LOCAL timeStep IS initialTimeStep.
+	LOCAL vAngle IS 0.
+	LOCAL maxVAngle IS 10.
+	LOCAL hAngle IS 0.
+	LOCAL maxHAngle IS 1.
+	// Iterate over the simulation cycles to find the right start time and burn angles
+	UNTIL FALSE {
+		LOCAL simResult IS RunCycle(cycleStartTime, timeStep, vAngle, hAngle).
+
+		IF simResult:complete { IF  }
 	}
 }
