@@ -1,55 +1,5 @@
 @LAZYGLOBAL OFF.
 
-// The passive docking script is meant to only decide which docking port to assign to
-// incoming spacecraft. Holding an orientation should be done via a separate stationkeeping script
-FUNCTION Dock_CheckForRequests {
-	PARAMETER safeDist IS 100.
-
-	IF NOT SHIP:MESSAGES:EMPTY {
-		LOCAL msg IS SHIP:MESSAGES:POP().
-		IF msg:HASSENDER {
-			LOCAL content IS msg:CONTENT.
-			IF content:ISTYPE("Lexicon") AND content:HASKEY("type") AND content:HASKEY("nodeType") {
-				IF content:type = "DockingRequest" {
-					LOCAL availablePorts IS LIST().
-					LOCAL selectedPort IS FALSE.
-					FOR port IN SHIP:DOCKINGPORTS {
-						IF port:NODETYPE = content["nodeType"] AND port:STATE = "Ready" {
-							availablePorts:ADD(port).
-						}
-					}
-					IF availablePorts:LENGTH = 1 { SET selectedPort TO availablePorts[0]:CID. }
-					IF availablePorts:LENGTH > 1 {
-						LOCAL closestDist IS -1.
-						FOR port IN availablePorts {
-							LOCAL dist IS ((port:NODEPOSITION + port:PORTFACING:FOREVECTOR * safeDist) - msg:SENDER:POSITION):MAG.
-							IF dist < closestDist OR closestDist = -1 {
-								SET selectedPort TO availablePorts[0]:CID.
-								SET closestDist TO dist.
-							}
-						}
-					}
-					LOCAL response IS LEXICON("type", "DockingRequestResponse", "result", selectedPort:ISTYPE("string")).
-					IF response:result {
-						response:ADD("dockingPortCID", selectedPort).
-						response:ADD("safeDist", safeDist).
-					}
-					
-					LOCAL c IS msg:SENDER:CONNECTION.
-					IF c:ISCONNECTED {
-						IF c:SENDMESSAGE(response) {
-							IF NOT response:result { RETURN FALSE. }
-							RETURN TRUE.
-						}
-					}
-				}
-			}
-		}
-	}
-
-	RETURN FALSE.
-}
-
 // Sends a docking request to another vessel and waits for a response
 FUNCTION Dock_RequestDocking {
 	PARAMETER targetShipName IS "", myPortTag IS "", waitTime IS 15.
