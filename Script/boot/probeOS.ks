@@ -8,31 +8,32 @@ PRINT "CPU Name:          " + VOLUME(1):NAME AT(3,1).
 PRINT "Currently Running: ProbeOS v" + version AT(3,2).
 //	Setting up directories
 LOCAL systemUpdateDir IS "0:/boot/".
-LOCAL configUpdateDir IS "0:/configUpdates/".
 LOCAL missionUpdateDir IS "0:/missionUpdates/".
 GLOBAL uploadDir IS "0:/missionUploads/".
 GLOBAL libsDir IS "0:/lib/".
 LOCAL bootDir IS "1:/boot/".
-LOCAL configDir IS "1:/config/".
 LOCAL missionDir IS "1:/mission/".
 LOCAL downloadsDir IS "1:/downloads/".
 GLOBAL tempDir IS "1:/temp/".	// This is where all libraries and temporary files should be saved. It will be cleared after each mission script is executed.
 
+// Common file names
 LOCAL currentSystemVersion IS "probeOS_001.ks".
 LOCAL updateFile IS VOLUME(1):NAME + "_missionUpdate.ks".
-LOCAL configFile IS VOLUME(1):NAME + "_config.ks".
-LOCAL toDownload IS LIST().
-
-LOCAL configured IS FALSE.
-GLOBAL steeringLocked IS FALSE.
-GLOBAL vehicle IS LEXICON().
+LOCAL altUpdateFile IS "activeVessel_missionUpdate.ks".
 GLOBAL missionInProgress IS EXISTS(tempDir + "missionInProgress.ks").
 
-IF NOT EXISTS(configUpdateDir) { CREATEDIR(configUpdateDir). }
+// Config variables
+LOCAL configured IS FALSE.
+LOCAL hasSolars IS FALSE.
+LOCAL solarsVector IS V(0,0,0).
+LOCAL RCSForRotation IS FALSE.
+
+// Vehicle state
+GLOBAL steeringLocked IS FALSE.
+
 IF NOT EXISTS(missionUpdateDir) { CREATEDIR(missionUpdateDir). }
 IF NOT EXISTS(uploadDir) { CREATEDIR(uploadDir). }
 IF NOT EXISTS(bootDir) { CREATEDIR(bootDir). }
-IF NOT EXISTS(configDir) { CREATEDIR(configDir). }
 IF NOT EXISTS(missionDir) { CREATEDIR(missionDir). }
 IF NOT EXISTS(downloadsDir) { CREATEDIR(downloadsDir). }
 IF NOT EXISTS(tempDir) { CREATEDIR(tempDir). }
@@ -136,14 +137,22 @@ FUNCTION ConfigUpdate {
 }
 
 FUNCTION MissionUpdate {
-	Notify("Downloading mission update.").
-	IF DownloadFile(missionUpdateDir, updateFile) {
+
+	FUNCTION ProcessMission {
 		IF EXISTS(missionDir + updateFile) { DELETEPATH(missionDir + updateFile). }
 		MOVEPATH(downloadsDir + updateFile, missionDir + updateFile).
 		DELETEPATH(downloadsDir + updateFile).
 		Notify("Download complete! Running instructions...", 5, GREEN).
 		WAIT 4.
 		RunMission().
+	}
+
+	Notify("Downloading mission update.").
+	IF DownloadFile(missionUpdateDir, updateFile) {
+		ProcessMission().
+	} ELSE IF DownloadFile(missionUpdateDir, altUpdateFile) {
+		MOVEPATH(downloadsDir + altUpdateFile, downloadsDir + updateFile).
+		ProcessMission().
 	}
 }
 
@@ -156,55 +165,55 @@ FUNCTION RunMission {
 
 FUNCTION GetUpdates {
 	//	Check if new version of boot file exists
-	IF toDownload:EMPTY {
-		FOR f IN OPEN(systemUpdateDir) {
-			IF f:NAME:STARTSWITH("probeOS_") AND f:NAME <> currentSystemVersion {
-				IF f:NAME:SUBSTRING(8, f:NAME:LENGTH()-11):TONUMBER() > version {
-					toDownload:ADD(LEXICON("type", "boot", "name", f:NAME, "time", TIME:SECONDS)).
-					WHEN toDownload[0]["time"] < TIME:SECONDS THEN {
-						KUNIVERSE:TIMEWARP:CANCELWARP().
-						WHEN KUNIVERSE:TIMEWARP:ISSETTLED THEN {
-							LOCAL n IS toDownload[0]["name"].
-							toDownload:REMOVE(0).
-							SystemUpdate(n).
-						}
-					}
-				}
+	FOR f IN OPEN(systemUpdateDir) {
+		IF f:NAME:STARTSWITH("probeOS_") AND f:NAME <> currentSystemVersion {
+			IF f:NAME:SUBSTRING(8, f:NAME:LENGTH()-11):TONUMBER() > version {
+				KUNIVERSE:TIMEWARP:CANCELWARP().
+				WAIT UNTIL KUNIVERSE:TIMEWARP:ISSETTLED.
+				SystemUpdate(f:NAME).
 			}
 		}
 	}
-	IF toDownload:EMPTY {
-		//	If no boot file update needed, check for config updates
-		IF EXISTS(configUpdateDir + configFile) {
-			toDownload:ADD(LEXICON("type", "config", "name", configFile, "time", TIME:SECONDS)).
-			WHEN toDownload[0]["time"] < TIME:SECONDS THEN {
-				KUNIVERSE:TIMEWARP:CANCELWARP().
-				WHEN KUNIVERSE:TIMEWARP:ISSETTLED THEN {
-					toDownload:REMOVE(0).
-					ConfigUpdate().
-				}
-			}
-		} ELSE IF EXISTS(missionUpdateDir + updateFile) {	//	If no boot/config file update needed, check for mission updates
-			toDownload:ADD(LEXICON("type", "mission", "name", updateFile, "time", TIME:SECONDS)).
-			WHEN toDownload[0]["time"] < TIME:SECONDS THEN {
-				KUNIVERSE:TIMEWARP:CANCELWARP().
-				WHEN KUNIVERSE:TIMEWARP:ISSETTLED THEN {
-					toDownload:REMOVE(0).
-					MissionUpdate().
-				}
-			}
-		}
+	//	If no boot file update needed, check for config updates
+	IF EXISTS(configUpdateDir + configFile) {
+		KUNIVERSE:TIMEWARP:CANCELWARP().
+		WAIT UNTIL KUNIVERSE:TIMEWARP:ISSETTLED.
+		ConfigUpdate().
+	} ELSE IF EXISTS(missionUpdateDir + updateFile) OR EXISTS(missionUpdateDir + altUpdateFile) {	//	If no boot/config file update needed, check for mission updates
+		KUNIVERSE:TIMEWARP:CANCELWARP().
+		WAIT UNTIL KUNIVERSE:TIMEWARP:ISSETTLED.
+		MissionUpdate().
 	}
 }
 
 FUNCTION StandBy {
-	IF vehicle:HASKEY("standby-facing") {
-		IF (VANG(SHIP:FACING:VECTOR, vehicle["standby-facing"]["facing-vector"]) > 1) OR (SHIP:ANGULARVEL:MAG > 0.01) {
-			PRINT "Standby Tasks:     Facing Sun" AT(3,5).
-			vehicle["standby-facing"]["face"]().
-		}
+	IF hasSolars AND (VANG(SHIP:FACING:VECTOR, SUN:POSITION:NORMALIZED - solarsVector) > 1) OR (SHIP:ANGULARVEL:MAG > 0.01) {
+		PRINT "Standby Tasks:     Facing Sun" AT(3,5).
+		SAS OFF.
+		SET steeringLocked TO TRUE.
+		IF RCSForRotation { RCS ON. }
+		LOCK STEERING TO SUN:POSITION:NORMALIZED - solarsVector. // TODO: Test this to make sure it's correct
+		WAIT UNTIL (VANG(SHIP:FACING:VECTOR, SUN:POSITION:NORMALIZED - solarsVector) < 0.1) AND (SHIP:ANGULARVEL:MAG < 0.001).
+		WAIT 5.
+		UNLOCK STEERING.
+		SET steeringLocked TO FALSE.
+		RCS OFF.
+		SAS ON.
+		WAIT 0.
+		KUNIVERSE:TIMEWARP:WARPTO(TIME:SECONDS + 1).
+		WAIT UNTIL KUNIVERSE:TIMEWARP:ISSETTLED.
+		Notify("Facing the sun! Remember to set rotation relative to Sun in Persistant Rotation", 10, GREEN).
 	}
 	PRINT "Standby Tasks:     None          " AT(3,5).
+}
+
+FUNCTION AutoConfig {
+	// TODO: Write the logic
+	// Requirements:
+	// * Check if ship has solar panels
+	// * - if solar panels are present, check their orientation
+	// * Check if ship has reaction wheels
+	// *- if reaction wheels are present, check if they have enough torque to rotate ship
 }
 
 // Check for an on-going mission and let it complete.
@@ -212,11 +221,8 @@ IF missionInProgress {
 	RunMission().
 }
 
-IF EXISTS(configDir + configFile) {
-	RUNPATH(configDir + configFile).
-	SET configured TO TRUE.
-	PRINT "Configuration:     Loaded    " AT(3,3).
-} ELSE { PRINT "Configuration:     Not Loaded" AT(3,3). }
+IF configured { PRINT "Configuration:     Configured    " AT(3,3). }
+ELSE { PRINT "Configuration:     Not Configured" AT(3,3). }
 
 Notify("System loaded successfully! Running ProbeOS v" + version + ".").
 
