@@ -122,20 +122,6 @@ FUNCTION SystemUpdate {
 	}
 }
 
-FUNCTION ConfigUpdate {
-	Notify("Downloading config update.").
-	IF DownloadFile(configUpdateDir, configFile) {
-		IF EXISTS(configDir + configFile) { DELETEPATH(configDir + configFile). }
-		MOVEPATH(downloadsDir + configFile, configDir + configFile).
-		DELETEPATH(downloadsDir + configFile).
-		Notify("Download complete! Configuring...", 5, GREEN).
-		WAIT 4.
-		RUNPATH(configDir + configFile).
-		SET configured TO TRUE.
-		PRINT "Configuration:     Loaded    " AT(3,3).
-	}
-}
-
 FUNCTION MissionUpdate {
 
 	FUNCTION ProcessMission {
@@ -174,12 +160,8 @@ FUNCTION GetUpdates {
 			}
 		}
 	}
-	//	If no boot file update needed, check for config updates
-	IF EXISTS(configUpdateDir + configFile) {
-		KUNIVERSE:TIMEWARP:CANCELWARP().
-		WAIT UNTIL KUNIVERSE:TIMEWARP:ISSETTLED.
-		ConfigUpdate().
-	} ELSE IF EXISTS(missionUpdateDir + updateFile) OR EXISTS(missionUpdateDir + altUpdateFile) {	//	If no boot/config file update needed, check for mission updates
+	//	If no boot file update needed, check for mission updates
+	IF EXISTS(missionUpdateDir + updateFile) OR EXISTS(missionUpdateDir + altUpdateFile) {	//	If no boot/config file update needed, check for mission updates
 		KUNIVERSE:TIMEWARP:CANCELWARP().
 		WAIT UNTIL KUNIVERSE:TIMEWARP:ISSETTLED.
 		MissionUpdate().
@@ -218,6 +200,8 @@ FUNCTION AutoConfig {
 
 // Check for an on-going mission and let it complete.
 IF missionInProgress {
+	Notify("Resuming ongoing mission...", 4, GREEN).
+	WAIT 2.
 	RunMission().
 }
 
