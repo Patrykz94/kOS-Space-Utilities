@@ -4,8 +4,10 @@ CLEARSCREEN.
 SET SHIP:CONTROL:PILOTMAINTHROTTLE TO 0.
 SET VOLUME(1):NAME TO CHOOSE SHIP:NAME IF CORE:TAG = "" ELSE SHIP:NAME + "_" + CORE:TAG.
 LOCAL version IS 1.
-PRINT "CPU Name:          " + VOLUME(1):NAME AT(3,1).
-PRINT "Currently Running: ProbeOS v" + version AT(3,2).
+LOCAL bootTime IS TIME:SECONDS.
+CreateUI().
+PrintValue(VOLUME(1):NAME, 1, 2).
+PrintValue("ProbeOS v" + version, 3, 25).
 //	Setting up directories
 LOCAL systemUpdateDir IS "0:/boot/".
 LOCAL missionUpdateDir IS "0:/missionUpdates/".
@@ -170,7 +172,7 @@ FUNCTION GetUpdates {
 
 FUNCTION StandBy {
 	IF hasSolars AND (VANG(SHIP:FACING:VECTOR, SUN:POSITION:NORMALIZED - solarsVector) > 1) OR (SHIP:ANGULARVEL:MAG > 0.01) {
-		PRINT "Standby Tasks:     Facing Sun" AT(3,5).
+		PrintValue("Facing Sun", 7, 25).
 		SAS OFF.
 		SET steeringLocked TO TRUE.
 		IF RCSForRotation { RCS ON. }
@@ -186,7 +188,7 @@ FUNCTION StandBy {
 		WAIT UNTIL KUNIVERSE:TIMEWARP:ISSETTLED.
 		Notify("Facing the sun! Remember to set rotation relative to Sun in Persistant Rotation", 10, GREEN).
 	}
-	PRINT "Standby Tasks:     None          " AT(3,5).
+	PrintValue("None", 7, 25).
 }
 
 FUNCTION AutoConfig {
@@ -198,26 +200,57 @@ FUNCTION AutoConfig {
 	// *- if reaction wheels are present, check if they have enough torque to rotate ship
 }
 
+// Create the terminal UI
+FUNCTION CreateUI {
+	CLEARSCREEN.
+	SET TERMINAL:WIDTH TO 53.
+
+	PRINT ".---------------------------------------------------.".
+	PRINT "| Not Available                                     |".
+	PRINT "|---------------------------------------------------|".
+	PRINT "| System version       - N/A                        |".
+	PRINT "|---------------------------------------------------|".
+	PRINT "| Configuration status - N/A                        |".
+	PRINT "| Connection status    - N/A                        |".
+	PRINT "| Active standby task  - N/A                        |".
+	PRINT "|---------------------------------------------------|".
+	PRINT "| Free Disk Space      - N/A                        |".
+	PRINT "| Active Time          - 0s                         |".
+	PRINT "'---------------------------------------------------'".
+}
+
+// Print a value to the terminal UI
+FUNCTION PrintValue {
+	PARAMETER val.      //  Message to write (string/scalar)
+	PARAMETER line.     //  Line to write to (scalar)
+	PARAMETER start.    //  First column to write to, inclusive (scalar)
+	LOCAL len IS 51-start.
+	LOCAL str IS val:TOSTRING().
+	IF str:LENGTH>len { SET str TO str:SUBSTRING(0, len-2)+"..". }
+	ELSE { SET str TO str:PADRIGHT(len). }
+	PRINT str AT(start, line).
+}
+
 // Check for an on-going mission and let it complete.
 IF missionInProgress {
 	Notify("Resuming ongoing mission...", 4, GREEN).
-	WAIT 2.
+	WAIT 4.
 	RunMission().
 }
 
-IF configured { PRINT "Configuration:     Configured    " AT(3,3). }
-ELSE { PRINT "Configuration:     Not Configured" AT(3,3). }
+IF configured { PrintValue("Auto-configured", 5, 25). }
+ELSE { PrintValue("Not configured", 5, 25). }
 
 Notify("System loaded successfully! Running ProbeOS v" + version + ".").
 
-PRINT "Free Disk Space:   " + VOLUME(1):FREESPACE + "/" + VOLUME(1):CAPACITY + " " + ROUND(VOLUME(1):FREESPACE/VOLUME(1):CAPACITY*100,1) + "%              " AT(3,6).
+PrintValue(ROUND(VOLUME(1):FREESPACE,1) + "k/" + ROUND(VOLUME(1):CAPACITY,1) + "k " + ROUND(VOLUME(1):FREESPACE/VOLUME(1):CAPACITY*100,1) + "%", 9, 25).
 
 UNTIL FALSE {
 	IF HOMECONNECTION:ISCONNECTED {
-		PRINT "Connection Status: Connected     " AT(3,4).
+		PrintValue("Connected", 6, 25).
 		GetUpdates().
 	} ELSE {
-		PRINT "Connection Status: Not Connected " AT(3,4).
+		PrintValue("Not connected", 6, 25).
 		WAIT UNTIL HOMECONNECTION:ISCONNECTED.
 	}
 	IF KUNIVERSE:TIMEWARP:MODE = "RAILS" AND KUNIVERSE:TIMEWARP:RATE > 1 {
@@ -226,4 +259,5 @@ UNTIL FALSE {
 		IF configured { StandBy(). }
 		WAIT 10.
 	}
+	PrintValue(ROUND(TIME:SECONDS-bootTime) + "s", 10, 25).
 }
