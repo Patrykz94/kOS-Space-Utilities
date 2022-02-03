@@ -670,6 +670,21 @@ FUNCTION NodeFromVector {
 	RETURN NODE(n_time, VDOT(vec,s_rad:NORMALIZED), VDOT(vec,s_nrm:NORMALIZED), VDOT(vec,s_pro:NORMALIZED)).
 }
 
+// Rodrigues vector rotation formula - Borrowed from PEGAS
+FUNCTION Rodrigues {
+	PARAMETER inVector. //  Expects a vector
+	PARAMETER axis.   //  Expects a vector
+	PARAMETER angle.  //  Expects a scalar
+
+	SET axis TO axis:NORMALIZED.
+
+	LOCAL outVector IS inVector*COS(angle).
+	SET outVector TO outVector + VCRS(axis, inVector)*SIN(angle).
+	SET outVector TO outVector + axis*VDOT(axis, inVector)*(1-COS(angle)).
+
+	RETURN outVector.
+}
+
 // Execute the next node
 FUNCTION ExecNode {
 	PARAMETER RCSRequired, removeNode IS TRUE, addKACAlarm IS TRUE.
